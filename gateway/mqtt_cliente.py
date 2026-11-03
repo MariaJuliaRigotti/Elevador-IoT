@@ -19,7 +19,7 @@ BROKER_HOST = os.getenv("BROKER_HOST", "localhost")
 BROKER_PORT = int(os.getenv("BROKER_PORT", "1883"))
 
 # Tipos de evento que encerram a espera de uma requisição
-EVENTOS_FINAIS = {"chegou", "concluido", "rejeitado"}
+EVENTOS_FINAIS = {"chegou", "rejeitado"}
 
 
 class PonteMQTT:
@@ -36,7 +36,7 @@ class PonteMQTT:
         self.lock = threading.Lock()
 
         self.conectado = False
-        self.estado = {"elevador": None, "elevador_online": None, "luzes": {}}
+        self.estado = {"elevador": None, "elevador_online": None}
 
     # ---- ciclo de vida ----
 
@@ -55,16 +55,14 @@ class PonteMQTT:
         self.conectado = not reason_code.is_failure
         print(f"[gateway] conectado ao broker {BROKER_HOST}:{BROKER_PORT} ({reason_code})", flush=True)
         c.subscribe([
-            ("casa/elevador/evento", 1),
-            ("casa/elevador/telemetria", 0),
-            ("casa/elevador/online", 1),
-            ("casa/luz/+/evento", 1),
-            ("casa/luz/+/estado", 1),
+            ("elevador/evento", 1),
+            ("elevador/telemetria", 0),
+            ("elevador/online", 1),
         ])
 
     def _on_message(self, c, userdata, msg):
         topico = msg.topic
-        if topico == "casa/elevador/online":
+        if topico == "elevador/online":
             self.estado["elevador_online"] = msg.payload.decode() == "true"
             return
         try:
@@ -72,11 +70,9 @@ class PonteMQTT:
         except ValueError:
             return
 
-        if topico == "casa/elevador/telemetria":
+        if topico == "elevador/telemetria":
             self.estado["elevador"] = dados
-        elif topico.startswith("casa/luz/") and topico.endswith("/estado"):
-            self.estado["luzes"][topico.split("/")[2]] = dados
-        elif topico.endswith("/evento"):
+        elif topico == "elevador/evento":
             self._resolver(dados)
 
     def _resolver(self, evento: dict):

@@ -1,8 +1,8 @@
-# Automação IoT via Linguagem Natural (versão base)
+# ElevadorIoT
 
-Plataforma que recebe comandos em português ("sobe o elevador pro andar 3",
-"liga a luz do corredor"), traduz com um LLM (ou regras) e controla
-dispositivos via MQTT. Nesta versão os dispositivos são simulados.
+Elevador controlado por linguagem natural, por texto ou voz ("sobe pro
+andar 3", "desce pro térreo"). Um LLM (ou regras) traduz a frase em comando,
+que vai ao elevador via MQTT. Nesta versão o elevador é simulado.
 
 ```
 Cliente ──HTTP──▶ Gateway (FastAPI + tradutor) ──MQTT──▶ Broker (Mosquitto) ──MQTT──▶ Simulador
@@ -17,10 +17,10 @@ PROTOCOLO.md            contrato MQTT: tópicos, payloads, QoS (leia primeiro)
 gateway/
   app.py                API HTTP (POST /comando, GET /estado, GET /saude)
   tradutor.py           linguagem natural -> comando (LLM com fallback para regex)
-  modelos.py            validação Pydantic (andar 0..5, luzes conhecidas)
+  modelos.py            validação Pydantic (andar 0..5)
   mqtt_cliente.py       publica comandos e espera a confirmação pelo request_id
 simulador/
-  simulador.py          gêmeo digital do elevador e das luzes
+  simulador.py          gêmeo digital do elevador
 cliente.py              cliente de terminal para testar (texto)
 voz.py                  cliente por voz: microfone -> texto -> gateway
 docker-compose.yml      sobe broker + simulador + gateway
@@ -70,7 +70,7 @@ Ou pelo navegador em http://localhost:8000/docs (Swagger), ou com curl:
 
 ```bash
 curl -X POST localhost:8000/comando -H "content-type: application/json" \
-     -d '{"texto": "ligar a luz do corredor"}'
+     -d '{"texto": "sobe pro terceiro andar"}'
 ```
 
 ### Por voz
@@ -88,19 +88,19 @@ internet) e só o texto vai para o gateway.
 Para observar o tráfego MQTT ao vivo:
 
 ```bash
-mosquitto_sub -h localhost -t 'casa/#' -v
+mosquitto_sub -h localhost -t 'elevador/#' -v
 ```
 
 ## Respostas do `POST /comando`
 
 | HTTP | status | Quando |
 |---|---|---|
-| 200 | `concluido` | dispositivo confirmou (`chegou` / `concluido`) |
+| 200 | `concluido` | elevador chegou ao andar (`chegou`) |
 | 202 | `aceito` | `"aguardar": false`, publicado sem esperar |
-| 409 | `rejeitado` | dispositivo recusou (ex.: elevador ocupado) |
+| 409 | `rejeitado` | elevador recusou (ex.: ocupado) |
 | 422 | - | frase não entendida ou fora do contrato (ex.: andar 9) |
 | 503 | - | broker fora do ar ou elevador offline (Last Will) |
-| 504 | `timeout` | dispositivo não respondeu a tempo |
+| 504 | `timeout` | elevador não respondeu a tempo |
 
 ## Configuração (variáveis de ambiente)
 

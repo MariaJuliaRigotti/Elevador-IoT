@@ -1,8 +1,8 @@
 # Protocolo de Controle e Telemetria (MQTT)
 
-Este documento é o **contrato** entre o Gateway e os dispositivos. O simulador
-e o futuro firmware do ESP32 devem seguir exatamente estes tópicos e payloads.
-Se o contrato for respeitado, trocar o simulador pelo hardware real não exige
+Este documento é o **contrato** entre o Gateway e o elevador. O simulador e o
+futuro firmware do ESP32 devem seguir exatamente estes tópicos e payloads. Se
+o contrato for respeitado, trocar o simulador pelo hardware real não exige
 nenhuma mudança no Gateway.
 
 - Broker: Mosquitto, porta `1883` (sem TLS nesta versão base)
@@ -10,16 +10,16 @@ nenhuma mudança no Gateway.
 - `request_id`: string gerada pelo Gateway para correlacionar comando e resposta
 - `ts`: timestamp Unix em segundos (float)
 
-## Elevador
+## Tópicos
 
 | Tópico | Quem publica | Quem assina | QoS | Retained |
 |---|---|---|---|---|
-| `casa/elevador/comando` | Gateway | Elevador | 1 | não |
-| `casa/elevador/evento` | Elevador | Gateway | 1 | não |
-| `casa/elevador/telemetria` | Elevador | Gateway | 0 | sim |
-| `casa/elevador/online` | Elevador (e Last Will) | Gateway | 1 | sim |
+| `elevador/comando` | Gateway | Elevador | 1 | não |
+| `elevador/evento` | Elevador | Gateway | 1 | não |
+| `elevador/telemetria` | Elevador | Gateway | 0 | sim |
+| `elevador/online` | Elevador (e Last Will) | Gateway | 1 | sim |
 
-### `casa/elevador/comando`
+## `elevador/comando`
 
 ```json
 {"request_id": "a1b2c3", "acao": "mover", "andar": 3}
@@ -28,7 +28,7 @@ nenhuma mudança no Gateway.
 - `acao`: por enquanto só `"mover"`
 - `andar`: inteiro de `0` (térreo) a `ANDAR_MAX` (padrão `5`)
 
-### `casa/elevador/evento`
+## `elevador/evento`
 
 Resposta a um comando específico, sempre com o mesmo `request_id`.
 
@@ -41,7 +41,10 @@ Resposta a um comando específico, sempre com o mesmo `request_id`.
 - `tipo`: `"aceito"` | `"chegou"` | `"rejeitado"`
 - `motivo` (só em `rejeitado`): `"ocupado"` | `"andar_invalido"` | `"payload_invalido"` | `"ja_esta_no_andar"`
 
-### `casa/elevador/telemetria`
+Nesta versão o elevador atende um comando por vez: enquanto está se movendo
+ou com a porta aberta, rejeita novos comandos com `"ocupado"`.
+
+## `elevador/telemetria`
 
 Publicada a cada mudança de andar e periodicamente (padrão: a cada 2 s).
 
@@ -59,40 +62,10 @@ Publicada a cada mudança de andar e periodicamente (padrão: a cada 2 s).
 - `direcao`: `"subindo"` | `"descendo"` | `"parado"`
 - `andar_destino`: `null` quando parado
 
-### `casa/elevador/online`
+## `elevador/online`
 
 Payload em texto puro: `"true"` ao conectar, `"false"` configurado como
-**Last Will**, publicado pelo broker se o dispositivo cair sem se despedir.
-
-## Luzes
-
-`<id>` é o identificador da luz: `corredor`, `sala`, `cozinha`, `quarto`.
-
-| Tópico | Quem publica | Quem assina | QoS | Retained |
-|---|---|---|---|---|
-| `casa/luz/<id>/comando` | Gateway | Luz | 1 | não |
-| `casa/luz/<id>/evento` | Luz | Gateway | 1 | não |
-| `casa/luz/<id>/estado` | Luz | Gateway | 1 | sim |
-
-### `casa/luz/<id>/comando`
-
-```json
-{"request_id": "d4e5f6", "acao": "ligar"}
-```
-
-- `acao`: `"ligar"` | `"desligar"`
-
-### `casa/luz/<id>/evento`
-
-```json
-{"request_id": "d4e5f6", "tipo": "concluido", "ligada": true, "ts": 1730000000.0}
-```
-
-### `casa/luz/<id>/estado`
-
-```json
-{"ligada": true, "ts": 1730000000.0}
-```
+**Last Will**, publicado pelo broker se o elevador cair sem se despedir.
 
 ## Fluxo de um comando
 

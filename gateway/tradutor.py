@@ -1,5 +1,5 @@
 """
-Tradução de linguagem natural -> comando estruturado.
+Tradução de linguagem natural -> comando estruturado do elevador.
 
 Duas estratégias com a mesma interface:
   - TradutorLLM: usa a API da Anthropic (precisa de ANTHROPIC_API_KEY)
@@ -14,11 +14,9 @@ import os
 import re
 import unicodedata
 
-from pydantic import TypeAdapter, ValidationError
+from pydantic import ValidationError
 
-from modelos import ANDAR_MAX, LUZES, Comando
-
-_validador = TypeAdapter(Comando)
+from modelos import ANDAR_MAX, ComandoElevador
 
 
 class ComandoNaoEntendido(Exception):
@@ -30,9 +28,9 @@ def _sem_acento(texto: str) -> str:
     return "".join(c for c in nfkd if not unicodedata.combining(c))
 
 
-def validar(dados: dict) -> Comando:
+def validar(dados: dict) -> ComandoElevador:
     try:
-        return _validador.validate_python(dados)
+        return ComandoElevador.model_validate(dados)
     except ValidationError as e:
         raise ComandoNaoEntendido(f"comando fora do contrato: {e.errors()[0]['msg']}") from e
 
@@ -54,54 +52,35 @@ _ORDINAIS = {
 class TradutorRegras:
     nome = "regras"
 
-    def traduzir(self, texto: str) -> Comando:
+    def traduzir(self, texto: str) -> ComandoElevador:
         t = _sem_acento(texto)
 
-        # --- Luz ---
-        if re.search(r"\b(luz|luzes|lampada|iluminacao)\b", t):
-            if re.search(r"\b(desliga\w*|apaga\w*)\b", t):
-                acao = "desligar"
-            elif re.search(r"\b(liga\w*|acende\w*|acenda)\b", t):
-                acao = "ligar"
-            else:
-                raise ComandoNaoEntendido("não entendi se é para ligar ou desligar a luz")
-            local = next((l for l in LUZES if re.search(rf"\b{l}\b", t)), None)
-            if local is None:
-                raise ComandoNaoEntendido(f"qual luz? opções: {', '.join(LUZES)}")
-            return validar({"dispositivo": "luz", "acao": acao, "local": local})
+        if not re.search(r"\b(elevador|andar|sobe|subir|suba|desce|descer|desca|terreo|vai|leva|chama)\b", t):
+            raise ComandoNaoEntendido("não reconheci um comando para o elevador")
 
-        # --- Elevador ---
-        if re.search(r"\b(elevador|andar|sobe|subir|desce|descer|terreo)\b", t):
-            m = re.search(r"\b(\d+)", t)
-            if m:
-                andar = int(m.group(1))
-            else:
-                # "quarto andar" é andar, "luz do quarto" já foi tratado acima
-                palavra = next((p for p in _ORDINAIS if re.search(rf"\b{p}\b", t)), None)
-                if palavra is None:
-                    raise ComandoNaoEntendido("para qual andar?")
-                andar = _ORDINAIS[palavra]
-            return validar({"dispositivo": "elevador", "acao": "mover", "andar": andar})
+        m = re.search(r"\b(\d+)", t)
+        if m:
+            andar = int(m.group(1))
+        else:
+            palavra = next((p for p in _ORDINAIS if re.search(rf"\b{p}\b", t)), None)
+            if palavra is None:
+                raise ComandoNaoEntendido("para qual andar?")
+            andar = _ORDINAIS[palavra]
 
-        raise ComandoNaoEntendido("não reconheci nenhum dispositivo no comando")
+        return validar({"acao": "mover", "andar": andar})
 
 
 # --------------------------------------------------------------------------
 # Estratégia 2: LLM
 # --------------------------------------------------------------------------
 
-PROMPT_SISTEMA = f"""Você traduz comandos de automação residencial em português para JSON.
+PROMPT_SISTEMA = f"""Você traduz comandos em português para controlar um elevador.
+O elevador vai do andar 0 (térreo) ao andar {ANDAR_MAX}.
 
-Dispositivos disponíveis:
-- elevador: andares de 0 (térreo) a {ANDAR_MAX}
-- luz: locais {", ".join(LUZES)}
+Responda APENAS com um objeto JSON, sem texto antes ou depois, sem markdown:
+{{"acao": "mover", "andar": <inteiro>}}
 
-Responda APENAS com um objeto JSON, sem texto antes ou depois, sem markdown.
-Formatos válidos:
-{{"dispositivo": "elevador", "acao": "mover", "andar": <inteiro>}}
-{{"dispositivo": "luz", "acao": "ligar" | "desligar", "local": "<local>"}}
-
-Se o comando for ambíguo, impossível ou não for sobre esses dispositivos, responda:
+Se o comando for ambíguo, pedir um andar inexistente ou não for sobre o elevador, responda:
 {{"erro": "<explicação curta>"}}"""
 
 
@@ -114,10 +93,10 @@ class TradutorLLM:
         self.cliente = Anthropic()  # lê ANTHROPIC_API_KEY do ambiente
         self.modelo = os.getenv("MODELO_LLM", "claude-haiku-5-5")
 
-    def traduzir(self, texto: str) -> Comando:
+    def traduzir(self, texto: str) -> ComandoElevador:
         resp = self.cliente.messages.create(
             model=self.modelo,
-            max_tokens=150,
+            max_tokens=100,
             system=PROMPT_SISTEMA,
             messages=[{"role": "user", "content": texto}],
         )
@@ -148,7 +127,7 @@ class TradutorComFallback:
         elif modo == "llm":
             raise RuntimeError("TRADUTOR=llm mas ANTHROPIC_API_KEY não está definida")
 
-    def traduzir(self, texto: str) -> tuple[Comando, str]:
+    def traduzir(self, texto: str) -> tuple[ComandoElevador, str]:
         if self.llm:
             try:
                 return self.llm.traduzir(texto), "llm"

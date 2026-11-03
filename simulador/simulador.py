@@ -1,5 +1,5 @@
 """
-Simulador (gêmeo digital) do elevador e das luzes.
+Simulador (gêmeo digital) do elevador.
 
 Responde aos mesmos tópicos MQTT que o hardware real responderia
 (ver PROTOCOLO.md). Para trocar pelo ESP32, basta desligar este script.
@@ -18,12 +18,11 @@ ANDAR_MAX = int(os.getenv("ANDAR_MAX", "5"))
 TEMPO_POR_ANDAR = float(os.getenv("TEMPO_POR_ANDAR", "1.5"))  # segundos
 TEMPO_PORTA = float(os.getenv("TEMPO_PORTA", "2.0"))           # porta aberta
 INTERVALO_TELEMETRIA = float(os.getenv("INTERVALO_TELEMETRIA", "2.0"))
-LUZES = ["corredor", "sala", "cozinha", "quarto"]
 
-T_EL_CMD = "casa/elevador/comando"
-T_EL_EVT = "casa/elevador/evento"
-T_EL_TEL = "casa/elevador/telemetria"
-T_EL_ON = "casa/elevador/online"
+T_EL_CMD = "elevador/comando"
+T_EL_EVT = "elevador/evento"
+T_EL_TEL = "elevador/telemetria"
+T_EL_ON = "elevador/online"
 
 
 def log(msg):
@@ -115,44 +114,18 @@ class Elevador:
         self.telemetria()
 
 
-class Luzes:
-    def __init__(self, cliente: mqtt.Client):
-        self.cliente = cliente
-        self.estado = {nome: False for nome in LUZES}
-
-    def publicar_estado(self, nome):
-        payload = {"ligada": self.estado[nome], "ts": time.time()}
-        self.cliente.publish(f"casa/luz/{nome}/estado", json.dumps(payload), qos=1, retain=True)
-
-    def receber_comando(self, nome, dados: dict):
-        rid = dados.get("request_id")
-        acao = dados.get("acao")
-        if acao not in ("ligar", "desligar"):
-            evento = {"request_id": rid, "tipo": "rejeitado", "motivo": "payload_invalido"}
-        else:
-            self.estado[nome] = acao == "ligar"
-            self.publicar_estado(nome)
-            evento = {"request_id": rid, "tipo": "concluido", "ligada": self.estado[nome]}
-            log(f"luz {nome} {'LIGADA' if self.estado[nome] else 'desligada'}")
-        evento["ts"] = time.time()
-        self.cliente.publish(f"casa/luz/{nome}/evento", json.dumps(evento), qos=1)
-
-
 def main():
-    cliente = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="simulador-casa")
+    cliente = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="simulador-elevador")
     # Last Will: se o simulador cair, o broker avisa todo mundo
     cliente.will_set(T_EL_ON, "false", qos=1, retain=True)
 
     elevador = Elevador(cliente)
-    luzes = Luzes(cliente)
 
     def on_connect(c, userdata, flags, reason_code, properties):
         log(f"conectado ao broker {BROKER_HOST}:{BROKER_PORT} ({reason_code})")
-        c.subscribe([(T_EL_CMD, 1), ("casa/luz/+/comando", 1)])
+        c.subscribe(T_EL_CMD, qos=1)
         c.publish(T_EL_ON, "true", qos=1, retain=True)
         elevador.telemetria()
-        for nome in LUZES:
-            luzes.publicar_estado(nome)
 
     def on_message(c, userdata, msg):
         try:
@@ -165,10 +138,6 @@ def main():
 
         if msg.topic == T_EL_CMD:
             elevador.receber_comando(dados)
-            return
-        partes = msg.topic.split("/")  # casa/luz/<id>/comando
-        if len(partes) == 4 and partes[1] == "luz" and partes[2] in LUZES:
-            luzes.receber_comando(partes[2], dados)
 
     cliente.on_connect = on_connect
     cliente.on_message = on_message

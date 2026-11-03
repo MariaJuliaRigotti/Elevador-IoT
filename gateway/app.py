@@ -3,7 +3,7 @@ Gateway HTTP -> MQTT.
 
 Endpoints:
   POST /comando   texto em linguagem natural -> comando MQTT
-  GET  /estado    último estado conhecido dos dispositivos (via telemetria)
+  GET  /estado    último estado conhecido do elevador (via telemetria)
   GET  /saude     status do gateway e da conexão com o broker
 
 Documentação interativa: http://localhost:8000/docs
@@ -17,7 +17,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 
-from modelos import ComandoElevador, ComandoLuz, PedidoTexto, Resposta
+from modelos import PedidoTexto, Resposta
 from mqtt_cliente import PonteMQTT
 from tradutor import ComandoNaoEntendido, TradutorComFallback
 
@@ -35,16 +35,10 @@ async def ciclo_de_vida(app: FastAPI):
     ponte.parar()
 
 
-app = FastAPI(title="Gateway IoT por Linguagem Natural", lifespan=ciclo_de_vida)
+app = FastAPI(title="ElevadorIoT - Gateway por Linguagem Natural", lifespan=ciclo_de_vida)
 
 
-def para_mqtt(cmd) -> tuple[str, dict]:
-    """Converte o comando validado no tópico e payload do PROTOCOLO.md."""
-    if isinstance(cmd, ComandoElevador):
-        return "casa/elevador/comando", {"acao": "mover", "andar": cmd.andar}
-    if isinstance(cmd, ComandoLuz):
-        return f"casa/luz/{cmd.local}/comando", {"acao": cmd.acao}
-    raise ValueError("comando desconhecido")
+TOPICO_COMANDO = "elevador/comando"
 
 
 @app.post("/comando", response_model=Resposta)
@@ -59,11 +53,11 @@ async def comando(pedido: PedidoTexto):
 
     if not ponte.conectado:
         raise HTTPException(status_code=503, detail="Gateway sem conexão com o broker MQTT")
-    if isinstance(cmd, ComandoElevador) and ponte.estado["elevador_online"] is False:
+    if ponte.estado["elevador_online"] is False:
         raise HTTPException(status_code=503, detail="Elevador offline")
 
-    # 2. Publica no broker e (opcionalmente) espera a confirmação
-    topico, payload = para_mqtt(cmd)
+    # 2. Publica no broker e (opcionalmente) espera o elevador confirmar
+    topico, payload = TOPICO_COMANDO, cmd.model_dump()
     try:
         request_id, enviado, evento = await ponte.enviar(topico, payload, pedido.aguardar, TIMEOUT)
     except ConnectionError as e:
