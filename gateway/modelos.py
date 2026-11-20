@@ -5,7 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-ANDAR_MAX = int(os.getenv("ANDAR_MAX", "5"))
+ANDAR_MAX = int(os.getenv("ANDAR_MAX", "3"))
 
 
 # ---- Comando estruturado (saída do tradutor) ----

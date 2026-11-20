@@ -18,7 +18,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 
 from modelos import PedidoTexto, Resposta
-from mqtt_cliente import PonteMQTT
+from mqtt_cliente import PREFIXO, PonteMQTT
 from tradutor import ComandoNaoEntendido, TradutorComFallback
 
 TIMEOUT = float(os.getenv("TIMEOUT_CONFIRMACAO", "15"))
@@ -30,6 +30,7 @@ tradutor = TradutorComFallback()
 @asynccontextmanager
 async def ciclo_de_vida(app: FastAPI):
     ponte.iniciar(asyncio.get_running_loop())
+    print(f"[gateway] prefixo MQTT: '{PREFIXO}'", flush=True)
     print(f"[gateway] tradutor: {'llm (com fallback regras)' if tradutor.llm else 'regras'}", flush=True)
     yield
     ponte.parar()
@@ -38,7 +39,7 @@ async def ciclo_de_vida(app: FastAPI):
 app = FastAPI(title="ElevadorIoT - Gateway por Linguagem Natural", lifespan=ciclo_de_vida)
 
 
-TOPICO_COMANDO = "elevador/comando"
+TOPICO_COMANDO = f"{PREFIXO}elevador/comando"
 
 
 @app.post("/comando", response_model=Resposta)

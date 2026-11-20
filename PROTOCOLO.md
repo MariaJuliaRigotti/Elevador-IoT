@@ -26,7 +26,7 @@ nenhuma mudança no Gateway.
 ```
 
 - `acao`: por enquanto só `"mover"`
-- `andar`: inteiro de `0` (térreo) a `ANDAR_MAX` (padrão `5`)
+- `andar`: inteiro de `1` (térreo) a `ANDAR_MAX` (padrão `3`)
 
 ## `elevador/evento`
 

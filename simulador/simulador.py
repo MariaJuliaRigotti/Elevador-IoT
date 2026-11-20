@@ -14,15 +14,17 @@ import paho.mqtt.client as mqtt
 
 BROKER_HOST = os.getenv("BROKER_HOST", "localhost")
 BROKER_PORT = int(os.getenv("BROKER_PORT", "1883"))
-ANDAR_MAX = int(os.getenv("ANDAR_MAX", "5"))
+ANDAR_MAX = int(os.getenv("ANDAR_MAX", "3"))
 TEMPO_POR_ANDAR = float(os.getenv("TEMPO_POR_ANDAR", "1.5"))  # segundos
 TEMPO_PORTA = float(os.getenv("TEMPO_PORTA", "2.0"))           # porta aberta
 INTERVALO_TELEMETRIA = float(os.getenv("INTERVALO_TELEMETRIA", "2.0"))
 
-T_EL_CMD = "elevador/comando"
-T_EL_EVT = "elevador/evento"
-T_EL_TEL = "elevador/telemetria"
-T_EL_ON = "elevador/online"
+PREFIXO = os.getenv("MQTT_PREFIXO", "maju-ana-x2k11/")
+
+T_EL_CMD = f"{PREFIXO}elevador/comando"
+T_EL_EVT = f"{PREFIXO}elevador/evento"
+T_EL_TEL = f"{PREFIXO}elevador/telemetria"
+T_EL_ON = f"{PREFIXO}elevador/online"
 
 
 def log(msg):

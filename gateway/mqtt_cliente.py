@@ -18,6 +18,16 @@ import paho.mqtt.client as mqtt
 BROKER_HOST = os.getenv("BROKER_HOST", "localhost")
 BROKER_PORT = int(os.getenv("BROKER_PORT", "1883"))
 
+# Prefixo dos tópicos (deve ser igual ao do simulador). Em broker público,
+# use um valor único para não misturar mensagens com outras pessoas.
+PREFIXO = os.getenv("MQTT_PREFIXO", "maju-ana-x2k11/")
+if PREFIXO and not PREFIXO.endswith("/"):
+    PREFIXO += "/"
+
+T_EVT = f"{PREFIXO}elevador/evento"
+T_TEL = f"{PREFIXO}elevador/telemetria"
+T_ON = f"{PREFIXO}elevador/online"
+
 # Tipos de evento que encerram a espera de uma requisição
 EVENTOS_FINAIS = {"chegou", "rejeitado"}
 
@@ -55,14 +65,14 @@ class PonteMQTT:
         self.conectado = not reason_code.is_failure
         print(f"[gateway] conectado ao broker {BROKER_HOST}:{BROKER_PORT} ({reason_code})", flush=True)
         c.subscribe([
-            ("elevador/evento", 1),
-            ("elevador/telemetria", 0),
-            ("elevador/online", 1),
+            (T_EVT, 1),
+            (T_TEL, 0),
+            (T_ON, 1),
         ])
 
     def _on_message(self, c, userdata, msg):
         topico = msg.topic
-        if topico == "elevador/online":
+        if topico == T_ON:
             self.estado["elevador_online"] = msg.payload.decode() == "true"
             return
         try:
@@ -70,9 +80,9 @@ class PonteMQTT:
         except ValueError:
             return
 
-        if topico == "elevador/telemetria":
+        if topico == T_TEL:
             self.estado["elevador"] = dados
-        elif topico == "elevador/evento":
+        elif topico == T_EVT:
             self._resolver(dados)
 
     def _resolver(self, evento: dict):
