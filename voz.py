@@ -35,7 +35,6 @@ import speech_recognition as sr  # noqa: E402  (precisa vir depois do ALSA)
 GATEWAY = "http://localhost:8000/comando"
 IDIOMA = "pt-BR"
 
-
 def ouvir(r: sr.Recognizer, mic: sr.Microphone) -> str | None:
     with mic as source:
         print("\n🎤 Fale o comando...")

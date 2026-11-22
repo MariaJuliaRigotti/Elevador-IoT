@@ -1,135 +1,165 @@
-"""
-Simulador (gêmeo digital) do elevador.
-
-Responde aos mesmos tópicos MQTT que o hardware real responderia
-(ver PROTOCOLO.md). Para trocar pelo ESP32, basta desligar este script.
-"""
+# Simulador do elevador. Responde aos mesmos tópicos MQTT que o hardware real responderia. 
 
 import json
 import os
 import threading
 import time
-
 import paho.mqtt.client as mqtt
 
-BROKER_HOST = os.getenv("BROKER_HOST", "localhost")
-BROKER_PORT = int(os.getenv("BROKER_PORT", "1883"))
-ANDAR_MAX = int(os.getenv("ANDAR_MAX", "3"))
-TEMPO_POR_ANDAR = float(os.getenv("TEMPO_POR_ANDAR", "1.5"))  # segundos
-TEMPO_PORTA = float(os.getenv("TEMPO_PORTA", "2.0"))           # porta aberta
-INTERVALO_TELEMETRIA = float(os.getenv("INTERVALO_TELEMETRIA", "2.0"))
+# Configuracoes
+BROKER_HOST = os.getenv("BROKER_HOST", "broker.hivemq.com")   # Onde está rodando o broker MQTT
+BROKER_PORTA = int(os.getenv("BROKER_PORTA", "1883"))   # Porta do broker MQTT
+ANDAR_MAX = int(os.getenv("ANDAR_MAX", "3"))   # Elevador vai do andar 0 ao 3
+TEMPO_POR_ANDAR = float(os.getenv("TEMPO_POR_ANDAR", "1.5"))   # Tempo em segundos para subir ou descer um andar
+TEMPO_PORTA = float(os.getenv("TEMPO_PORTA", "2.0"))   # Quanto tempo a porta fica aberta ao chegar em um andar
+INTERVALO_TELEMETRIA = float(os.getenv("INTERVALO_TELEMETRIA", "2.0"))   # Intervalo entre envios de status do elevador
+PREFIXO = os.getenv("MQTT_PREFIXO", "maju-ana-prefixo/")   # Prefixo dos topicos usados pelo simulador
 
-PREFIXO = os.getenv("MQTT_PREFIXO", "maju-ana-x2k11/")
-
-T_EL_CMD = f"{PREFIXO}elevador/comando"
-T_EL_EVT = f"{PREFIXO}elevador/evento"
-T_EL_TEL = f"{PREFIXO}elevador/telemetria"
-T_EL_ON = f"{PREFIXO}elevador/online"
-
+# Nomes dos topicos MQTT
+topico_comando = f"{PREFIXO}elevador/comando"   # Topico pelo qual o simulador recebe os comandos
+topico_evento = f"{PREFIXO}elevador/evento"   # Topico pelo qual o simulador publica eventos (chegou, rejeitado, aceito)
+topico_telemetria = f"{PREFIXO}elevador/telemetria"   # Topico pelo qual o simulador publica o estado atual do elevador
+topico_online = f"{PREFIXO}elevador/online"   # Indica se o simulador esta conectado e disponivel
 
 def log(msg):
     print(f"[simulador] {msg}", flush=True)
 
+# Usamos time.monotonic() para obter uma referencia crescente de tempo e medir intervalos
+def tempo_atual():
+    return time.monotonic()
 
 class Elevador:
+
     def __init__(self, cliente: mqtt.Client):
+
         self.cliente = cliente
-        self.andar_atual = 0
+        self.andar_atual = 0   # Comeca no andar 0
         self.andar_destino = None
         self.porta_aberta = False
-        self.lock = threading.Lock()
+        self.request_id_atual = None   # ID do comando que está sendo executado
+
+        # Controlam em que tempo cada coisa deve acontecer
+        self.tempo_prox_andar = None    # Quando o elevador chega ao próximo andar
+        self.tempo_fechar_porta = None     # Quando a porta deve fechar
 
     @property
+    # Verifica se existe um andar de destino definido, ou seja, se o elevador está em movimento
     def movendo(self):
         return self.andar_destino is not None
 
+    # Verifica se o elevador está subindo, descendo ou parado
     def direcao(self):
+
         if self.andar_destino is None:
             return "parado"
-        return "subindo" if self.andar_destino > self.andar_atual else "descendo"
+        if self.andar_destino > self.andar_atual:
+            return "subindo"
+        else:
+            return "descendo"
 
+    # Reune as informacoes atuais do elevador, que serao enviadas pelo MQTT
     def telemetria(self):
-        with self.lock:
-            payload = {
-                "andar_atual": self.andar_atual,
-                "andar_destino": self.andar_destino,
-                "movendo": self.movendo,
-                "direcao": self.direcao(),
-                "porta_aberta": self.porta_aberta,
-                "ts": time.time(),
-            }
-        self.cliente.publish(T_EL_TEL, json.dumps(payload), qos=0, retain=True)
 
+        payload = {
+            "andar_atual": self.andar_atual,
+            "andar_destino": self.andar_destino,
+            "movendo": self.movendo,
+            "direcao": self.direcao(),
+            "porta_aberta": self.porta_aberta,
+            "ts": time.time(),
+        }
+        self.cliente.publish(topico_telemetria, json.dumps(payload), qos=0, retain=True)
+
+    # Registra os eventos do elevador e envia as informacoes correspondentes pelo MQTT
     def evento(self, request_id, tipo, **extra):
+
         payload = {"request_id": request_id, "tipo": tipo, "ts": time.time(), **extra}
-        self.cliente.publish(T_EL_EVT, json.dumps(payload), qos=1)
+        self.cliente.publish(topico_evento, json.dumps(payload), qos=1)
         log(f"evento {tipo} {extra} (req={request_id})")
 
+    # Recebe os comandos pelo MQTT e, caso sejam validos, inicia a movimentacao do elevador
     def receber_comando(self, dados: dict):
-        rid = dados.get("request_id")
+
+        id_solicitacao = dados.get("request_id")
         andar = dados.get("andar")
 
+        # Verifica a acao e o tipo do andar
         if dados.get("acao") != "mover" or not isinstance(andar, int):
-            return self.evento(rid, "rejeitado", motivo="payload_invalido")
+            return self.evento(id_solicitacao, "rejeitado", motivo="payload_invalido")
+        # Verifica se o andar eh valido (0 a 3)
         if not 0 <= andar <= ANDAR_MAX:
-            return self.evento(rid, "rejeitado", motivo="andar_invalido")
+            return self.evento(id_solicitacao, "rejeitado", motivo="andar_invalido")
+        # Verifica se o elevador esta ocupado
+        if self.movendo or self.porta_aberta:
+            return self.evento(id_solicitacao, "rejeitado", motivo="ocupado")
+        # Verifica se o elevador ja esta no andar solicitado
+        if andar == self.andar_atual:
+            return self.evento(id_solicitacao, "rejeitado", motivo="ja_esta_no_andar")
 
-        with self.lock:
-            if self.movendo or self.porta_aberta:
-                ocupado = True
-            elif andar == self.andar_atual:
-                ocupado = None
-            else:
-                ocupado = False
-                self.andar_destino = andar
+        # Se as validacoes forem aceitas, agenda o movimento do elevador
+        self.andar_destino = andar
+        self.request_id_atual = id_solicitacao
+        self.tempo_prox_andar = tempo_atual() + TEMPO_POR_ANDAR
 
-        if ocupado:
-            return self.evento(rid, "rejeitado", motivo="ocupado")
-        if ocupado is None:
-            return self.evento(rid, "rejeitado", motivo="ja_esta_no_andar")
-
-        self.evento(rid, "aceito", andar=andar)
-        # Movimento em outra thread para não travar o loop do MQTT
-        threading.Thread(target=self._mover, args=(rid,), daemon=True).start()
-
-    def _mover(self, rid):
+        # Envia um evento MQTT indicando que o comando foi aceito
+        self.evento(id_solicitacao, "aceito", andar=andar)   
         log(f"movendo {self.andar_atual} -> {self.andar_destino}")
+        # Publica as informacoes atualizadas do elevador
         self.telemetria()
-        while True:
-            time.sleep(TEMPO_POR_ANDAR)  # tempo físico de subir/descer um andar
-            with self.lock:
-                passo = 1 if self.andar_destino > self.andar_atual else -1
-                self.andar_atual += passo
-                chegou = self.andar_atual == self.andar_destino
-                if chegou:
-                    self.andar_destino = None
-                    self.porta_aberta = True
+
+    # Simula a movimentacao do elevador, atualizando o andar atual e o estado da porta
+    def atualizar(self):
+
+        # Armazena o instante atual
+        t = tempo_atual()
+
+        # Verifica se o elevador deve avancar um andar
+        if self.movendo and t >= self.tempo_prox_andar:
+            
+            if self.andar_destino > self.andar_atual:
+                self.andar_atual += 1 
+            else:
+                self.andar_atual -= 1
             log(f"passando pelo andar {self.andar_atual}")
-            self.telemetria()
-            if chegou:
-                break
 
-        self.evento(rid, "chegou", andar=self.andar_atual)
-        time.sleep(TEMPO_PORTA)
-        with self.lock:
+            # Verifica se o elevador chegou ao andar de destino
+            if self.andar_atual == self.andar_destino:   
+                self.andar_destino = None
+                self.tempo_prox_andar = None
+                self.porta_aberta = True
+                self.tempo_fechar_porta = t + TEMPO_PORTA
+                self.telemetria()
+                self.evento(self.request_id_atual, "chegou", andar=self.andar_atual)
+                self.request_id_atual = None
+            else:                                         
+                self.tempo_prox_andar += TEMPO_POR_ANDAR
+                self.telemetria()
+
+        # Verifica se ja deu o tempo de fechar a porta do elevador
+        if self.porta_aberta and t >= self.tempo_fechar_porta:
             self.porta_aberta = False
-        self.telemetria()
-
+            self.tempo_fechar_porta = None
+            log("porta fechada")
+            self.telemetria()
 
 def main():
-    cliente = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="simulador-elevador")
-    # Last Will: se o simulador cair, o broker avisa todo mundo
-    cliente.will_set(T_EL_ON, "false", qos=1, retain=True)
 
+    # Cria o cliente que sera usado pelo simulador para se comunicar com o broker
+    cliente = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f"{PREFIXO}simulador")    
+    cliente.will_set(topico_online, "false", qos=1, retain=True)
     elevador = Elevador(cliente)
 
-    def on_connect(c, userdata, flags, reason_code, properties):
-        log(f"conectado ao broker {BROKER_HOST}:{BROKER_PORT} ({reason_code})")
-        c.subscribe(T_EL_CMD, qos=1)
-        c.publish(T_EL_ON, "true", qos=1, retain=True)
+    # Inscreve o simulador nos topicos de comando e informa que ele esta online 
+    def conectado(c, userdata, flags, reason_code, properties):
+
+        log(f"conectado ao broker {BROKER_HOST}:{BROKER_PORTA} ({reason_code})")
+        c.subscribe(topico_comando, qos=1)
+        c.publish(topico_online, "true", qos=1, retain=True)
         elevador.telemetria()
 
-    def on_message(c, userdata, msg):
+    # Interpreta as mensagens recebidas e encaminha o comando para o elevador
+    def mensagem(c, userdata, msg):
+
         try:
             dados = json.loads(msg.payload)
             if not isinstance(dados, dict):
@@ -138,31 +168,53 @@ def main():
             log(f"payload inválido em {msg.topic}: {msg.payload!r}")
             return
 
-        if msg.topic == T_EL_CMD:
+        if msg.topic == topico_comando:
             elevador.receber_comando(dados)
 
-    cliente.on_connect = on_connect
-    cliente.on_message = on_message
-    cliente.reconnect_delay_set(min_delay=1, max_delay=10)
+    cliente.on_connect = conectado
+    cliente.on_message = mensagem
 
+    # Tenta fazer a primeira conexao do simulador com o broker MQTT
     while True:
         try:
-            cliente.connect(BROKER_HOST, BROKER_PORT, keepalive=30)
+            cliente.connect(BROKER_HOST, BROKER_PORTA, keepalive=30)
             break
         except OSError:
             log("broker indisponível, tentando de novo em 2 s...")
             time.sleep(2)
 
-    cliente.loop_start()
-    try:
-        while True:  # telemetria periódica (heartbeat)
-            time.sleep(INTERVALO_TELEMETRIA)
-            elevador.telemetria()
-    except KeyboardInterrupt:
-        cliente.publish(T_EL_ON, "false", qos=1, retain=True)
-        cliente.loop_stop()
-        cliente.disconnect()
+    prox_telemetria = tempo_atual() + INTERVALO_TELEMETRIA
 
+    # Loop principal do simulador
+    try:
+        while True:
+          
+            rc = cliente.loop(timeout=0.1)
+
+            # Verifica a conexao
+            if rc != mqtt.MQTT_ERR_SUCCESS:
+                log("conexão perdida, tentando reconectar em 2 s...")
+                time.sleep(2)
+                try:
+                    cliente.reconnect()   
+                except OSError:
+                    pass
+                continue
+
+            # Atualiza a movimentacao do elevador
+            elevador.atualizar()
+
+            # Controla o envio periodico de telemetria do elevador
+            if tempo_atual() >= prox_telemetria:
+                elevador.telemetria()
+                prox_telemetria += INTERVALO_TELEMETRIA
+
+    # Trata o encerramento do simulador
+    except KeyboardInterrupt:
+
+        cliente.publish(topico_online, "false", qos=1, retain=True)
+        cliente.loop(timeout=0.5)   
+        cliente.disconnect()
 
 if __name__ == "__main__":
     main()

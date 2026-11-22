@@ -15,18 +15,18 @@ import uuid
 
 import paho.mqtt.client as mqtt
 
-BROKER_HOST = os.getenv("BROKER_HOST", "localhost")
-BROKER_PORT = int(os.getenv("BROKER_PORT", "1883"))
+BROKER_HOST = os.getenv("BROKER_HOST", "broker.hivemq.com")   # Onde está rodando o broker MQTT
+BROKER_PORT = int(os.getenv("BROKER_PORT", "1883"))   # Porta do broker MQTT
 
 # Prefixo dos tópicos (deve ser igual ao do simulador). Em broker público,
-# use um valor único para não misturar mensagens com outras pessoas.
-PREFIXO = os.getenv("MQTT_PREFIXO", "maju-ana-x2k11/")
+# Usamos um valor único para não misturar mensagens com outras pessoas
+PREFIXO = os.getenv("MQTT_PREFIXO", "maju-ana-prefixo/")
 if PREFIXO and not PREFIXO.endswith("/"):
     PREFIXO += "/"
 
-T_EVT = f"{PREFIXO}elevador/evento"
-T_TEL = f"{PREFIXO}elevador/telemetria"
-T_ON = f"{PREFIXO}elevador/online"
+topico_evento = f"{PREFIXO}elevador/evento"     # Topico pelo qual o cliente recebe eventos (chegou, rejeitado, aceito)
+topico_telemetria = f"{PREFIXO}elevador/telemetria"     # Topico pelo qual o cliente recebe o status do elevador
+topico_online = f"{PREFIXO}elevador/online"     # Indica se o simulador esta conectado e disponivel
 
 # Tipos de evento que encerram a espera de uma requisição
 EVENTOS_FINAIS = {"chegou", "rejeitado"}
@@ -65,14 +65,14 @@ class PonteMQTT:
         self.conectado = not reason_code.is_failure
         print(f"[gateway] conectado ao broker {BROKER_HOST}:{BROKER_PORT} ({reason_code})", flush=True)
         c.subscribe([
-            (T_EVT, 1),
-            (T_TEL, 0),
-            (T_ON, 1),
+            (topico_evento, 1),
+            (topico_telemetria, 0),
+            (topico_online, 1),
         ])
 
     def _on_message(self, c, userdata, msg):
         topico = msg.topic
-        if topico == T_ON:
+        if topico == topico_online:
             self.estado["elevador_online"] = msg.payload.decode() == "true"
             return
         try:
@@ -80,9 +80,9 @@ class PonteMQTT:
         except ValueError:
             return
 
-        if topico == T_TEL:
+        if topico == topico_telemetria:
             self.estado["elevador"] = dados
-        elif topico == T_EVT:
+        elif topico == topico_evento:
             self._resolver(dados)
 
     def _resolver(self, evento: dict):

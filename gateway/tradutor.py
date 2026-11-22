@@ -1,138 +1,193 @@
-"""
-Tradução de linguagem natural -> comando estruturado do elevador.
-
-Duas estratégias com a mesma interface:
-  - TradutorLLM: usa a API da Anthropic (precisa de ANTHROPIC_API_KEY)
-  - TradutorRegras: regex, funciona offline e serve de fallback
-
-Em ambos os casos a saída é validada com Pydantic antes de virar MQTT.
-O LLM nunca publica nada diretamente: ele só traduz.
-"""
+# Traducao de linguagem natural para o comando estruturado do elevador
+# Estrategias disponiveis:
+#   - TradutorRegras: regex, funciona offline e serve de fallback
+#   - TradutorLLM: usa a API da Anthropic (precisa de ANTHROPIC_API_KEY)
+#   - TradutorOllama: LLM local via Ollama (gratis, sem chave de API)
+# Em todos os casos a saida eh validada com Pydantic antes de virar MQTT
+# O LLM nunca publica nada diretamente: ele so traduz
+# O prompt, o modelo e os parametros dos LLMs ficam no dominios.py
 
 import json
 import os
 import re
 import unicodedata
-
 from pydantic import ValidationError
+from modelos import ComandoElevador
+from dominios import PROMPT_COMANDO, obter_dominio
 
-from modelos import ANDAR_MAX, ComandoElevador
-
-
+# Erro usado quando a frase nao pode ser convertida em um comando valido
 class ComandoNaoEntendido(Exception):
     pass
 
+# Deixa o texto em minusculas e sem acentos (ex.: "Térreo" -> "terreo")
+def sem_acento(texto: str) -> str:
 
-def _sem_acento(texto: str) -> str:
     nfkd = unicodedata.normalize("NFKD", texto.lower())
     return "".join(c for c in nfkd if not unicodedata.combining(c))
 
-
+# Confere se o comando segue o contrato (acao "mover" e andar de 0 a ANDAR_MAX)
 def validar(dados: dict) -> ComandoElevador:
+
     try:
         return ComandoElevador.model_validate(dados)
     except ValidationError as e:
         raise ComandoNaoEntendido(f"comando fora do contrato: {e.errors()[0]['msg']}") from e
 
+# Monta a mensagem enviada ao LLM, incluindo o andar atual quando ele for conhecido
+def montar_mensagem(texto: str, andar_atual: int | None) -> str:
 
-# --------------------------------------------------------------------------
-# Estratégia 1: regras (regex)
-# --------------------------------------------------------------------------
+    if andar_atual is None:
+        return texto
+    return f"Andar atual: {andar_atual}\nComando: {texto}"
 
-_ORDINAIS = {
+# Converte a resposta em texto do LLM em um comando validado
+def interpretar_resposta(bruto: str) -> ComandoElevador:
+
+    bruto = re.sub(r"^```(?:json)?|```$", "", bruto.strip()).strip()   # Remove markdown, caso venha
+
+    try:
+        dados = json.loads(bruto)
+    except json.JSONDecodeError as e:
+        raise ComandoNaoEntendido(f"LLM não devolveu JSON: {bruto[:80]}") from e
+
+    if not isinstance(dados, dict):
+        raise ComandoNaoEntendido(f"LLM não devolveu um objeto JSON: {bruto[:80]}")
+    if "erro" in dados:
+        raise ComandoNaoEntendido(dados["erro"])
+
+    return validar(dados)
+
+# Estrategia 1: regras (regex)
+
+# Palavras que representam andares
+ORDINAIS = {
     "terreo": 0, "zero": 0,
     "primeiro": 1, "um": 1,
     "segundo": 2, "dois": 2,
     "terceiro": 3, "tres": 3,
-    "quarto": 4, "quatro": 4,
-    "quinto": 5, "cinco": 5,
 }
 
-
 class TradutorRegras:
+
     nome = "regras"
 
-    def traduzir(self, texto: str) -> ComandoElevador:
-        t = _sem_acento(texto)
+    # Procura palavras-chave e o numero do andar na frase
+    # O andar atual e ignorado: as regras nao entendem comandos relativos
+    def traduzir(self, texto: str, andar_atual: int | None = None) -> ComandoElevador:
 
+        t = sem_acento(texto)
+
+        # Verifica se a frase fala do elevador
         if not re.search(r"\b(elevador|andar|sobe|subir|suba|desce|descer|desca|terreo|vai|leva|chama)\b", t):
             raise ComandoNaoEntendido("não reconheci um comando para o elevador")
 
+        # Procura um numero na frase (ex.: "andar 2")
         m = re.search(r"\b(\d+)", t)
         if m:
             andar = int(m.group(1))
         else:
-            palavra = next((p for p in _ORDINAIS if re.search(rf"\b{p}\b", t)), None)
+            # Se nao houver numero, procura uma palavra da lista ORDINAIS
+            palavra = None
+            for p in ORDINAIS:
+                if re.search(rf"\b{p}\b", t):
+                    palavra = p
+                    break
             if palavra is None:
                 raise ComandoNaoEntendido("para qual andar?")
-            andar = _ORDINAIS[palavra]
+            andar = ORDINAIS[palavra]
 
         return validar({"acao": "mover", "andar": andar})
 
+# Estrategia 2: LLM
 
-# --------------------------------------------------------------------------
-# Estratégia 2: LLM
-# --------------------------------------------------------------------------
-
-PROMPT_SISTEMA = f"""Você traduz comandos em português para controlar um elevador.
-O elevador vai do andar 0 (térreo) ao andar {ANDAR_MAX}.
-
-Responda APENAS com um objeto JSON, sem texto antes ou depois, sem markdown:
-{{"acao": "mover", "andar": <inteiro>}}
-
-Se o comando for ambíguo, pedir um andar inexistente ou não for sobre o elevador, responda:
-{{"erro": "<explicação curta>"}}"""
-
-
+# LLM na nuvem, pela API da Anthropic
 class TradutorLLM:
+
     nome = "llm"
 
     def __init__(self):
-        from anthropic import Anthropic  # import aqui: só exige a lib se usar LLM
 
-        self.cliente = Anthropic()  # lê ANTHROPIC_API_KEY do ambiente
+        from anthropic import Anthropic   # Importado aqui: so exige a biblioteca se usar esse tradutor
+
+        self.cliente = Anthropic()   # Le ANTHROPIC_API_KEY do ambiente
         self.modelo = os.getenv("MODELO_LLM", "claude-haiku-5-5")
 
-    def traduzir(self, texto: str) -> ComandoElevador:
+    # Envia a frase para a API e interpreta a resposta
+    def traduzir(self, texto: str, andar_atual: int | None = None) -> ComandoElevador:
+
         resp = self.cliente.messages.create(
             model=self.modelo,
             max_tokens=100,
-            system=PROMPT_SISTEMA,
-            messages=[{"role": "user", "content": texto}],
+            system=PROMPT_COMANDO,
+            messages=[{"role": "user", "content": montar_mensagem(texto, andar_atual)}],
         )
-        bruto = resp.content[0].text.strip()
-        bruto = re.sub(r"^```(?:json)?|```$", "", bruto).strip()  # caso venha em markdown
-        try:
-            dados = json.loads(bruto)
-        except json.JSONDecodeError as e:
-            raise ComandoNaoEntendido(f"LLM não devolveu JSON: {bruto[:80]}") from e
-        if "erro" in dados:
-            raise ComandoNaoEntendido(dados["erro"])
-        return validar(dados)
 
+        return interpretar_resposta(resp.content[0].text)
 
-# --------------------------------------------------------------------------
-# Escolha da estratégia
-# --------------------------------------------------------------------------
+# LLM local via Ollama
+class TradutorOllama:
 
-class TradutorComFallback:
-    """Tenta o LLM; se falhar por erro de rede/API, usa as regras."""
+    nome = "ollama"
 
     def __init__(self):
+
+        # Le a configuracao do dominio comando (no, modelo, prompt e temperatura)
+        config = obter_dominio("comando")
+        self.url = config["no"]   # Endereco do no Ollama
+        self.modelo = config["modelo"]   # Modelo usado na traducao
+        self.prompt = config["prompt"]   # Instrucoes enviadas antes de cada frase
+        self.temperatura = config["temperatura"]   # 0 = respostas sempre iguais para a mesma frase
+
+    # Envia a frase para o Ollama e interpreta a resposta
+    def traduzir(self, texto: str, andar_atual: int | None = None) -> ComandoElevador:
+
+        import httpx
+
+        resp = httpx.post(
+            f"{self.url}/api/chat",
+            json={
+                "model": self.modelo,
+                "messages": [
+                    {"role": "system", "content": self.prompt},
+                    {"role": "user", "content": montar_mensagem(texto, andar_atual)},
+                ],
+                "stream": False,
+                "format": "json",   # Forca a saida em JSON
+                "options": {"temperature": self.temperatura},
+            },
+            timeout=60,
+        )
+        resp.raise_for_status()
+
+        return interpretar_resposta(resp.json()["message"]["content"])
+
+# Escolha da estrategia
+
+# Tenta o LLM; se ele falhar por erro de rede/API, usa as regras
+class TradutorComFallback:
+
+    def __init__(self):
+
         self.regras = TradutorRegras()
-        modo = os.getenv("TRADUTOR", "auto")  # auto | llm | regras
+        modo = os.getenv("TRADUTOR", "auto")   # auto | llm | ollama | regras
         self.llm = None
-        if modo in ("auto", "llm") and os.getenv("ANTHROPIC_API_KEY"):
+
+        if modo == "ollama":
+            self.llm = TradutorOllama()
+        elif modo in ("auto", "llm") and os.getenv("ANTHROPIC_API_KEY"):
             self.llm = TradutorLLM()
         elif modo == "llm":
             raise RuntimeError("TRADUTOR=llm mas ANTHROPIC_API_KEY não está definida")
 
-    def traduzir(self, texto: str) -> tuple[ComandoElevador, str]:
+    # Retorna o comando traduzido e o nome do tradutor que foi usado
+    def traduzir(self, texto: str, andar_atual: int | None = None) -> tuple[ComandoElevador, str]:
+
         if self.llm:
             try:
-                return self.llm.traduzir(texto), "llm"
+                return self.llm.traduzir(texto, andar_atual), self.llm.nome
             except ComandoNaoEntendido:
-                raise  # o LLM entendeu que o comando é inválido: não insiste
-            except Exception as e:  # erro de rede, limite de taxa, chave inválida...
+                raise   # O LLM entendeu que o comando e invalido: nao insiste
+            except Exception as e:   # Erro de rede, limite de taxa, chave invalida...
                 print(f"[tradutor] LLM falhou ({type(e).__name__}: {e}), usando regras", flush=True)
+
         return self.regras.traduzir(texto), "regras"

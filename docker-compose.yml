@@ -1,19 +1,11 @@
 services:
-  broker:
-    image: eclipse-mosquitto:2
-    ports:
-      - "1883:1883"
-    volumes:
-      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
-
   simulador:
     build: .
     working_dir: /app/simulador
     command: python -u simulador.py
     environment:
-      BROKER_HOST: broker
+      BROKER_HOST: broker.hivemq.com
       TEMPO_POR_ANDAR: "1.5"
-    depends_on: [broker]
 
   gateway:
     build: .
@@ -22,7 +14,18 @@ services:
     ports:
       - "8000:8000"
     environment:
-      BROKER_HOST: broker
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      TRADUTOR: ${TRADUTOR:-auto}
-    depends_on: [broker]
+      BROKER_HOST: broker.hivemq.com
+      TRADUTOR: ollama
+      OLLAMA_URL: http://ollama:11434
+      MODELO_OLLAMA: qwen2.5:3b
+    depends_on: [ollama]
+
+  ollama:
+    image: ollama/ollama
+    environment:
+      OLLAMA_KEEP_ALIVE: "-1"     # nunca tira o modelo da memória
+    volumes:
+      - ollama:/root/.ollama      # guarda o modelo baixado entre execuções
+
+volumes:
+  ollama:
