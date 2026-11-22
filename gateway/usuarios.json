@@ -1,0 +1,26 @@
+{
+    "token-admin-7f3k9q": {
+        "usuario": "admin",
+        "dominios": ["comando", "consulta"],
+        "limite_por_minuto": 30,
+        "admin": true
+    },
+    "token-morador-2m8x4p": {
+        "usuario": "morador",
+        "dominios": ["comando", "consulta"],
+        "limite_por_minuto": 10,
+        "admin": false
+    },
+    "token-visitante-9d1w6z": {
+        "usuario": "visitante",
+        "dominios": ["consulta"],
+        "limite_por_minuto": 5,
+        "admin": false
+    },
+    "token-experimento-5h2r7t": {
+        "usuario": "experimento",
+        "dominios": ["comando", "consulta"],
+        "limite_por_minuto": 1000,
+        "admin": true
+    }
+}

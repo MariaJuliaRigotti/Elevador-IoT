@@ -1,0 +1,61 @@
+mensagem,dominio,complexidade
+vai pro andar 1,comando,simples
+"me leva pro térreo, por favor",comando,simples
+quero descer pro térreo,comando,simples
+sobe pro último andar,comando,simples
+leva a gente pro andar 2,comando,simples
+manda o elevador pro terceiro andar,comando,simples
+você pode me levar pro andar 1?,comando,simples
+consegue subir pro andar dois?,comando,simples
+desce pro andar zero,comando,simples
+vai pro primeiro andar,comando,simples
+chama o elevador aqui no andar 3,comando,simples
+"pro térreo, por favor",comando,simples
+sobi pro andar 3,comando,simples
+leva pro andar 0,comando,simples
+preciso ir pro último andar,comando,simples
+sobe dois andares,comando,dificil
+desce três andares,comando,dificil
+vai pro andar de baixo,comando,dificil
+sobe pro andar seguinte,comando,dificil
+vai pro andar logo abaixo do atual,comando,dificil
+sobe pro terceiro e depois desce pro térreo,comando,dificil
+"se estiver no último andar desce pro 1, senão sobe pro 3",comando,dificil
+vai pro andar que é o triplo do atual,comando,dificil
+desce metade do caminho até o térreo,comando,dificil
+sobe um andar e para,comando,dificil
+vai pro andar 2 e depois pro 0,comando,dificil
+desce pro andar de baixo e volta,comando,dificil
+sobe dois andares e depois desce um,comando,dificil
+avança três andares pra cima,comando,dificil
+volta um andar,comando,dificil
+o elevador está em qual andar?,consulta,simples
+a porta tá fechada?,consulta,simples
+o elevador está funcionando?,consulta,simples
+ele está descendo?,consulta,simples
+qual é o andar atual?,consulta,simples
+quem inventou o elevador?,consulta,simples
+qual é a capital do Brasil?,consulta,simples
+me diz onde está o elevador,consulta,simples
+o elevador está no andar 3?,consulta,simples
+a porta abriu?,consulta,simples
+o sistema está online?,consulta,simples
+quantos andares tem o prédio?,consulta,simples
+que dia é hoje?,consulta,simples
+ele já chegou?,consulta,simples
+o elevador tá parado no segundo andar?,consulta,simples
+em quanto tempo ele chega aqui no andar 1?,consulta,dificil
+por que a porta não fecha?,consulta,dificil
+"se eu pedir o térreo agora, quanto tempo demora?",consulta,dificil
+o elevador está mais longe do andar 2 ou do andar 3?,consulta,dificil
+descreva o que está acontecendo com o elevador,consulta,dificil
+qual o caminho mais rápido até o último andar?,consulta,dificil
+quantas paradas ele faz até chegar no térreo?,consulta,dificil
+"quanto falta pra ele chegar no meu andar, que é o 2?",consulta,dificil
+resuma o estado do elevador,consulta,dificil
+a porta ficou aberta por muito tempo?,consulta,dificil
+"se ele estiver subindo agora, qual será o próximo andar?",consulta,dificil
+há alguma diferença de tempo de viagem entre o andar 1 e o 2?,consulta,dificil
+compare o tempo de ir do térreo ao andar 2 com o do andar 2 ao último,consulta,dificil
+o elevador consegue chegar no andar 3 em menos de 10 segundos?,consulta,dificil
+explique por que ele parou no andar 1,consulta,dificil

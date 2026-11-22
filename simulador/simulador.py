@@ -2,13 +2,12 @@
 
 import json
 import os
-import threading
 import time
 import paho.mqtt.client as mqtt
 
 # Configuracoes
 BROKER_HOST = os.getenv("BROKER_HOST", "broker.hivemq.com")   # Onde está rodando o broker MQTT
-BROKER_PORTA = int(os.getenv("BROKER_PORTA", "1883"))   # Porta do broker MQTT
+BROKER_PORT = int(os.getenv("BROKER_PORT", "1883"))   # Porta do broker MQTT
 ANDAR_MAX = int(os.getenv("ANDAR_MAX", "3"))   # Elevador vai do andar 0 ao 3
 TEMPO_POR_ANDAR = float(os.getenv("TEMPO_POR_ANDAR", "1.5"))   # Tempo em segundos para subir ou descer um andar
 TEMPO_PORTA = float(os.getenv("TEMPO_PORTA", "2.0"))   # Quanto tempo a porta fica aberta ao chegar em um andar
@@ -152,7 +151,7 @@ def main():
     # Inscreve o simulador nos topicos de comando e informa que ele esta online 
     def conectado(c, userdata, flags, reason_code, properties):
 
-        log(f"conectado ao broker {BROKER_HOST}:{BROKER_PORTA} ({reason_code})")
+        log(f"conectado ao broker {BROKER_HOST}:{BROKER_PORT} ({reason_code})")
         c.subscribe(topico_comando, qos=1)
         c.publish(topico_online, "true", qos=1, retain=True)
         elevador.telemetria()
@@ -177,7 +176,7 @@ def main():
     # Tenta fazer a primeira conexao do simulador com o broker MQTT
     while True:
         try:
-            cliente.connect(BROKER_HOST, BROKER_PORTA, keepalive=30)
+            cliente.connect(BROKER_HOST, BROKER_PORT, keepalive=30)
             break
         except OSError:
             log("broker indisponível, tentando de novo em 2 s...")

@@ -1,0 +1,49 @@
+mensagem,dominio,complexidade
+sobe pro andar 3,comando,simples
+desce pro térreo,comando,simples
+me leva até o segundo andar,comando,simples
+pode subir pro andar 3?,comando,simples
+quero ir pro andar 2,comando,simples
+sobe pro terceiro andar,comando,simples
+chama o elevador no térreo,comando,simples
+dá pra me levar pro térreo?,comando,simples
+desce pro térre,comando,simples
+sobe pro andar tres,comando,simples
+"por favor, vai para o andar zero",comando,simples
+leve-me ao último andar,comando,simples
+desce dois andares,comando,dificil
+sobe um andar,comando,dificil
+vai pro andar acima,comando,dificil
+sobe três andares,comando,dificil
+desce um andar e depois volta pro térreo,comando,dificil
+vai pro andar de cima e depois volta pro térreo,comando,dificil
+leva pro andar anterior,comando,dificil
+sobe pro penúltimo andar,comando,dificil
+vai pro andar do meio,comando,dificil
+"se estiver no térreo sobe pro 2, senão desce pro 1",comando,dificil
+desce metade dos andares,comando,dificil
+sobe pro andar que é o dobro do atual,comando,dificil
+onde está o elevador?,consulta,simples
+em que andar o elevador está?,consulta,simples
+a porta está aberta?,consulta,simples
+o elevador está parado?,consulta,simples
+ele está subindo?,consulta,simples
+em que andar ele está,consulta,simples
+o elevador está online?,consulta,simples
+qual a capital da França?,consulta,simples
+que horas são?,consulta,simples
+está subindo ou descendo,consulta,simples
+o elevador tá no térreo?,consulta,simples
+o elevador vai subir?,consulta,simples
+quanto tempo até o elevador chegar no andar 3?,consulta,dificil
+"se eu chamar agora, em quanto tempo ele chega no térreo?",consulta,dificil
+quantos andares ele ainda vai subir até parar?,consulta,dificil
+quantos andares faltam para ele chegar ao último?,consulta,dificil
+por que o elevador está parado com a porta aberta?,consulta,dificil
+o elevador está mais perto do térreo ou do último andar?,consulta,dificil
+quanto tempo demora pra ir do térreo ao último andar?,consulta,dificil
+"se ele está subindo, vai passar pelo segundo andar?",consulta,dificil
+"qual andar está mais próximo do elevador agora, o 1 ou o 3?",consulta,dificil
+ele vai demorar muito pra chegar aqui no andar 2?,consulta,dificil
+explique o que a telemetria do elevador diz sobre o estado dele,consulta,dificil
+compare a distância do elevador até o andar 1 e até o andar 3,consulta,dificil

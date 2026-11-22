@@ -6,7 +6,13 @@ from modelos import ANDAR_MAX
 
 # Configuracoes
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")   # No Ollama padrao
-MODELO_OLLAMA = os.getenv("MODELO_OLLAMA", "qwen2.5:3b")   # Modelo padrao
+MODELO_OLLAMA = os.getenv("MODELO_OLLAMA", "qwen2.5:3b")   # Modelo padrao (usado se o dominio nao definir o proprio)
+# Niveis de modelo do roteamento semantico (dominio "auto"): pedidos simples vao para o pequeno, dificeis para o grande
+MODELO_PEQUENO = os.getenv("MODELO_PEQUENO", "qwen2.5:1.5b")
+MODELO_GRANDE = os.getenv("MODELO_GRANDE", "qwen2.5:3b")
+MODELO_CLASSIFICADOR = os.getenv("MODELO_CLASSIFICADOR", MODELO_PEQUENO)   # Quem decide a rota; usar o pequeno mantem o custo baixo
+MODELO_COMANDO = os.getenv("MODELO_COMANDO", "qwen2.5:1.5b")   # Dominio comando: saida curta em JSON, um modelo menor basta
+MODELO_CONSULTA = os.getenv("MODELO_CONSULTA", MODELO_OLLAMA)   # Dominio consulta: responde em linguagem natural
 
 # Prompt do dominio comando: transforma a frase em JSON para o elevador
 PROMPT_COMANDO = f"""Você traduz comandos em português para controlar um elevador.
@@ -35,7 +41,7 @@ DOMINIOS = {
     # Transforma a frase em comando para o elevador
     "comando": {
         "no": os.getenv("NO_COMANDO", OLLAMA_URL),   # Endereco do no Ollama
-        "modelo": MODELO_OLLAMA,
+        "modelo": MODELO_COMANDO,
         "prompt": PROMPT_COMANDO,
         "temperatura": 0,   # Sempre a mesma resposta para a mesma frase
         "max_simultaneos": 1,   # Pedidos atendidos ao mesmo tempo nesse no
@@ -43,11 +49,11 @@ DOMINIOS = {
     },
     # Responde perguntas sobre o estado do predio usando a telemetria MQTT
     "consulta": {
-        "no": os.getenv("NO_CONSULTA", OLLAMA_URL),
-        "modelo": MODELO_OLLAMA,
+        "no": os.getenv("NO_CONSULTA", OLLAMA_URL),   # Endereco do no Ollama
+        "modelo": MODELO_CONSULTA,
         "prompt": PROMPT_CONSULTA,
         "temperatura": 0.3,   # Um pouco de variacao, mas sem inventar
-        "max_simultaneos": 2,
+        "max_simultaneos": 2,   # Pedidos atendidos ao mesmo tempo nesse no
         "tipo": "chat",   # A saida e texto, enviado ao usuario
     },
 }
@@ -58,3 +64,9 @@ def obter_dominio(nome: str) -> dict:
     if nome not in DOMINIOS:
         raise KeyError(f"domínio desconhecido: {nome}")
     return DOMINIOS[nome]
+
+
+# Escolhe o modelo pela complexidade que o classificador atribuiu ao pedido ("simples" ou "dificil")
+def modelo_por_complexidade(complexidade: str) -> str:
+
+    return MODELO_PEQUENO if complexidade == "simples" else MODELO_GRANDE

@@ -112,8 +112,8 @@ class TradutorLLM:
         self.cliente = Anthropic()   # Le ANTHROPIC_API_KEY do ambiente
         self.modelo = os.getenv("MODELO_LLM", "claude-haiku-5-5")
 
-    # Envia a frase para a API e interpreta a resposta
-    def traduzir(self, texto: str, andar_atual: int | None = None) -> ComandoElevador:
+    # Envia a frase para a API e interpreta a resposta (o parametro 'modelo' so vale para o Ollama)
+    def traduzir(self, texto: str, andar_atual: int | None = None, modelo: str | None = None) -> ComandoElevador:
 
         resp = self.cliente.messages.create(
             model=self.modelo,
@@ -139,14 +139,15 @@ class TradutorOllama:
         self.temperatura = config["temperatura"]   # 0 = respostas sempre iguais para a mesma frase
 
     # Envia a frase para o Ollama e interpreta a resposta
-    def traduzir(self, texto: str, andar_atual: int | None = None) -> ComandoElevador:
+    # 'modelo' permite ao roteador semantico escolher o modelo de cada pedido (padrao: o do dominio)
+    def traduzir(self, texto: str, andar_atual: int | None = None, modelo: str | None = None) -> ComandoElevador:
 
         import httpx
 
         resp = httpx.post(
             f"{self.url}/api/chat",
             json={
-                "model": self.modelo,
+                "model": modelo or self.modelo,
                 "messages": [
                     {"role": "system", "content": self.prompt},
                     {"role": "user", "content": montar_mensagem(texto, andar_atual)},
@@ -180,11 +181,12 @@ class TradutorComFallback:
             raise RuntimeError("TRADUTOR=llm mas ANTHROPIC_API_KEY não está definida")
 
     # Retorna o comando traduzido e o nome do tradutor que foi usado
-    def traduzir(self, texto: str, andar_atual: int | None = None) -> tuple[ComandoElevador, str]:
+    def traduzir(self, texto: str, andar_atual: int | None = None,
+                 modelo: str | None = None) -> tuple[ComandoElevador, str]:
 
         if self.llm:
             try:
-                return self.llm.traduzir(texto, andar_atual), self.llm.nome
+                return self.llm.traduzir(texto, andar_atual, modelo), self.llm.nome
             except ComandoNaoEntendido:
                 raise   # O LLM entendeu que o comando e invalido: nao insiste
             except Exception as e:   # Erro de rede, limite de taxa, chave invalida...
