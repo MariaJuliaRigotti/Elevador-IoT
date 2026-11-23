@@ -15,12 +15,12 @@ services:
       - "8000:8000"
     environment:
       BROKER_HOST: broker.hivemq.com
-      POLITICA_FILA: ${POLITICA_FILA:-fifo}
+      POLITICA_FILA: ${POLITICA_FILA:-fifo}   # fifo (ordem de chegada) | curtas (respostas menores primeiro)
+      LIMITE_NO: "2"                  # Pedidos simultaneos no no Ollama (igual ao OLLAMA_NUM_PARALLEL)
       TRADUTOR: ollama
       OLLAMA_URL: http://ollama:11434
       MODELO_COMANDO: qwen2.5:1.5b    # domínio comando (JSON curto)
       MODELO_CONSULTA: qwen2.5:3b     # domínio consulta (resposta em streaming)
-      NOS_CONSULTA: "http://ollama:11434,http://ollama2:11434"
     depends_on: [ollama]
 
   ollama:
@@ -31,15 +31,5 @@ services:
     volumes:
       - ollama:/root/.ollama      # guarda o modelo baixado entre execuções
 
-  ollama2:
-    image: ollama/ollama
-    profiles: ["dois-nos"]
-    environment:
-      OLLAMA_KEEP_ALIVE: "-1"
-      OLLAMA_NUM_PARALLEL: "2"
-    volumes:
-      - ollama2:/root/.ollama
-
 volumes:
   ollama:
-  ollama2:

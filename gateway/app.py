@@ -1,14 +1,4 @@
-# Gateway HTTP -> MQTT. Recebe frases em linguagem natural e publica o comando no broker
-# POST /comando   texto em linguagem natural -> comando MQTT
-# POST /chat      mensagem + dominio (comando, consulta ou auto)
-# POST /rota      so classifica a mensagem (dominio e complexidade), sem executar nada
-# GET  /metricas  TTFT, tokens/s, latencia e vazao de cada dominio (DELETE /metricas zera)
-# GET  /estado    ultimo estado conhecido do elevador (via telemetria)
-# GET  /saude     status do gateway, da conexao com o broker e das filas de cada no
-# Fila (fila.py): POLITICA_FILA=fifo (ordem de chegada) ou curtas (respostas menores primeiro)
-# Documentacao interativa: http://localhost:8000/docs
-# Seguranca (seguranca.py): /comando, /chat, /rota e DELETE /metricas exigem o cabecalho
-# "Authorization: Bearer <token>". Os endpoints so de leitura (/metricas, /estado, /saude) sao abertos
+# Gateway do elevador. Recebe pedidos por HTTP e envia comandos ao elevador (MQTT) ou perguntas ao LLM
 
 import asyncio
 import json
@@ -20,7 +10,7 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from consulta import abrir_stream, ler_tokens
 from dominios import obter_dominio
-from fila import FILAS
+from fila import FILAS, FILAS_NO, liberar_vaga, ocupar_vaga
 from metricas import metricas
 from modelos import PedidoChat, PedidoRota, PedidoTexto, Resposta
 from mqtt_cliente import PREFIXO, PonteMQTT
@@ -29,14 +19,15 @@ from seguranca import autenticar, autorizar, exigir_admin, limitar_taxa, verific
 from tradutor import ComandoNaoEntendido, TradutorComFallback
 
 # Configuracoes
-TIMEOUT = float(os.getenv("TIMEOUT_CONFIRMACAO", "15"))   # Tempo maximo de espera pela confirmacao do elevador
-TOPICO_COMANDO = f"{PREFIXO}elevador/comando"   # Topico pelo qual o gateway envia os comandos ao elevador
+TIMEOUT = float(os.getenv("TIMEOUT_CONFIRMACAO", "15"))   # Tempo máximo esperando o elevador confirmar o comando
+TOPICO_COMANDO = f"{PREFIXO}elevador/comando"   # Tópico em que o gateway publica os comandos
+TOKENS_COMANDO = 20   # Tamanho estimado da resposta de um comando, usado na prioridade da fila
 
-ponte = PonteMQTT()   # Conexao com o broker MQTT
-tradutor = TradutorComFallback()   # Converte frases em comandos
+ponte = PonteMQTT()   # Conexão com o broker MQTT
+tradutor = TradutorComFallback()   # Transforma a frase em comando 
 
 
-# Retorna o nome do tradutor em uso, para mostrar no log e no /saude
+# Retorna o nome do tradutor em uso
 def nome_tradutor_ativo():
 
     if tradutor.llm:
@@ -44,62 +35,73 @@ def nome_tradutor_ativo():
     return "regras"
 
 
-# Executado ao ligar e ao desligar o gateway: abre e fecha a conexao com o broker
+# Roda quando o gateway liga e quando desliga: conecta e desconecta do broker
 @asynccontextmanager
 async def ciclo_de_vida(app: FastAPI):
 
     ponte.iniciar(asyncio.get_running_loop())
     print(f"[gateway] prefixo MQTT: '{PREFIXO}'", flush=True)
+
     if tradutor.llm:
         print(f"[gateway] tradutor: {tradutor.llm.nome} (com fallback regras)", flush=True)
     else:
         print("[gateway] tradutor: regras", flush=True)
 
-    yield   # O gateway fica rodando aqui ate ser desligado
+    yield   
 
     ponte.parar()
-
 
 app = FastAPI(title="ElevadorIoT - Gateway por Linguagem Natural", lifespan=ciclo_de_vida)
 
 
-# Recebe uma frase, traduz para comando, publica no MQTT e devolve o resultado
-# Exige token valido, permissao para o dominio comando e respeita o limite de pedidos do usuario
+# Recebe uma frase, transforma em comando e envia ao elevador
+# Antes, confere se o usuário pode mover o elevador e se não passou do limite de pedidos
 @app.post("/comando", response_model=Resposta)
 async def comando(pedido: PedidoTexto, usuario: dict = Depends(autenticar)):
-
     verificar_acesso(usuario, "comando")
     return await executar_comando(pedido)
 
 
-# Fluxo do comando. 'modelo' e 'rota' vem do roteador semantico (dominio auto); sem eles usa o modelo do dominio
+# Executa um comando do começo ao fim: traduz, publica no MQTT e espera o elevador responder
+# Quando vem do domínio auto, 'modelo' e 'rota' trazem a escolha feita pelo roteador
 async def executar_comando(pedido: PedidoTexto, modelo: str | None = None, rota: dict | None = None):
 
-    inicio = time.perf_counter()   # Usado para medir o tempo total da requisicao
-    horario_inicio = time.time()   # Horario de chegada, usado no calculo da vazao
+    inicio = time.perf_counter()   # Para medir o tempo total do pedido
+    horario_inicio = time.time()   # Horário de chegada, usado no cálculo da vazão
 
-    # 1. Traduz a frase em um comando estruturado (ja validado)
-    # O andar atual vem da telemetria MQTT e ajuda o LLM com comandos relativos ("desce um andar")
+    # O andar atual ajuda o LLM a entender pedidos como "desce um andar"
     andar_atual = (ponte.estado.get("elevador") or {}).get("andar_atual")
 
-    # Espera a vez na fila do no do dominio comando antes de usar o LLM
+    # Espera a vez na fila do comando e, se o tradutor usa o Ollama, também na fila do nó
     fila = FILAS["comando"]
-    espera = await fila.entrar()
+    no = obter_dominio("comando")["no"]
+    usa_no = nome_tradutor_ativo() == "ollama"   # As regras e a API externa não usam o nó local
+
+    if usa_no:
+        espera = await ocupar_vaga(fila, no, TOKENS_COMANDO)
+    else:
+        espera = await fila.entrar(TOKENS_COMANDO)
+
+    # Traduz a frase em comando 
     try:
         cmd, nome_tradutor = await asyncio.to_thread(tradutor.traduzir, pedido.texto, andar_atual, modelo)
     except ComandoNaoEntendido as e:
         raise HTTPException(status_code=422, detail=f"Não entendi: {e}")
     finally:
-        fila.sair()   # Libera o no assim que a traducao termina (nao espera o elevador andar)
+        # Libera a vaga logo depois de traduzir, sem esperar o elevador chegar
+        if usa_no:
+            liberar_vaga(fila, no)
+        else:
+            fila.sair()
 
-    # Verifica se o gateway esta conectado ao broker
+    # Verifica se o gateway está conectado ao broker
     if not ponte.conectado:
         raise HTTPException(status_code=503, detail="Gateway sem conexão com o broker MQTT")
-    # Verifica se o elevador esta online (topico online / Last Will)
+    # Verifica se o elevador está online (tópico online e Last Will)
     if ponte.estado["elevador_online"] is False:
         raise HTTPException(status_code=503, detail="Elevador offline")
 
-    # 2. Publica no broker e, se pedido, espera o elevador confirmar
+    # Publica o comando e, se o cliente pediu, espera a confirmação do elevador
     topico = TOPICO_COMANDO
     payload = cmd.model_dump()
     try:
@@ -107,11 +109,11 @@ async def executar_comando(pedido: PedidoTexto, modelo: str | None = None, rota:
     except ConnectionError as e:
         raise HTTPException(status_code=503, detail=str(e))
 
-    # 3. Escolhe o status e o codigo HTTP da resposta
+    # Escolhe o status e o código HTTP de acordo com a resposta do elevador
     if not pedido.aguardar:
         status, codigo = "aceito", 202   # Publicou e respondeu sem esperar
     elif evento is None:
-        status, codigo = "timeout", 504   # O elevador nao respondeu a tempo
+        status, codigo = "timeout", 504   # O elevador não respondeu a tempo
     elif evento["tipo"] == "rejeitado":
         status, codigo = "rejeitado", 409   # O elevador recusou o comando
     else:
@@ -129,7 +131,7 @@ async def executar_comando(pedido: PedidoTexto, modelo: str | None = None, rota:
         espera_fila_ms=round(espera * 1000, 1),
     )
 
-    # Registra as metricas do pedido (o comando nao tem TTFT nem tokens: a saida e um JSON curto)
+    # Guarda as métricas do pedido (o comando não tem TTFT nem tokens, porque a saída é um JSON curto)
     metricas.registrar(
         "comando",
         inicio=horario_inicio,
@@ -140,19 +142,19 @@ async def executar_comando(pedido: PedidoTexto, modelo: str | None = None, rota:
     return JSONResponse(status_code=codigo, content=corpo.model_dump())
 
 
-# Recebe uma mensagem e o dominio que deve atende-la, e encaminha para o dominio certo
-# Com dominio "auto", o roteador semantico decide o dominio e o tamanho do modelo
+# Recebe uma mensagem e encaminha para o domínio certo
+# No domínio auto, o roteador decide se é comando ou consulta e qual modelo usar
 @app.post("/chat")
 async def chat(pedido: PedidoChat, usuario: dict = Depends(autenticar)):
 
-    inicio = time.perf_counter()   # Conta a partir da chegada do pedido: no auto, o TTFT inclui o tempo de classificar
-    horario_inicio = time.time()   # Horario de chegada, usado no calculo da vazao
+    inicio = time.perf_counter()   # No domínio auto, o TTFT inclui o tempo de classificar
+    horario_inicio = time.time()   # Horário de chegada, usado no cálculo da vazão
 
-    # Confere o limite de pedidos ANTES de classificar, para ninguem gastar o roteador sem limite
+    # Confere o limite de pedidos antes de classificar, para ninguém usar o roteador sem limite
     limitar_taxa(usuario)
 
     dominio = pedido.dominio
-    modelo = None   # None = usa o modelo configurado no dominio
+    modelo = None   # None: usa o modelo configurado no domínio
     rota = None
 
     if dominio == "auto":
@@ -164,69 +166,69 @@ async def chat(pedido: PedidoChat, usuario: dict = Depends(autenticar)):
         print(f"[roteador] {pedido.mensagem!r} -> {dominio}/{decisao.complexidade} "
               f"({decisao.modelo}, {decisao.metodo}, {decisao.classificacao_ms} ms)", flush=True)
 
-    # Verifica se o dominio pedido existe
+    # Verifica se o domínio existe
     try:
         config = obter_dominio(dominio)
     except KeyError as e:
         raise HTTPException(status_code=400, detail=e.args[0])
 
-    # Verifica se o usuario pode usar esse dominio (no auto, o dominio escolhido pelo roteador)
+    # Verifica se o usuário pode usar esse domínio (no auto, o domínio escolhido pelo roteador)
     autorizar(usuario, dominio)
 
-    # Dominio comando: reaproveita o fluxo do /comando (traduz, valida e publica no MQTT)
+    # Comando: segue o mesmo caminho do /comando
     if config["tipo"] == "comando":
         return await executar_comando(PedidoTexto(texto=pedido.mensagem, aguardar=pedido.aguardar), modelo, rota)
 
-    # Dominio consulta: responde a pergunta em streaming, usando o estado do elevador vindo da telemetria
-    # Espera a vez na fila do no deste dominio
-    # Na politica "curtas", o tamanho estimado da resposta (max_tokens_resposta) define a prioridade
+    # Consulta: espera a vez na fila do domínio e depois na fila do nó
+    # Na política curtas, quem pediu uma resposta menor (max_tokens_resposta) passa na frente
     fila = FILAS[dominio]
-    espera = await fila.entrar(pedido.max_tokens_resposta or 256)
+    no = config["no"]
+    espera = await ocupar_vaga(fila, no, pedido.max_tokens_resposta or 256)
 
+    # Conecta ao nó antes de começar a responder, para ainda poder devolver o erro 503
     try:
-        # Conecta ao no ANTES de comecar a resposta, para ainda poder devolver erro 503
         cliente_http, resposta_ollama = await abrir_stream(
             pedido.mensagem, ponte.estado, modelo, pedido.max_tokens_resposta)
     except httpx.HTTPError as e:
-        fila.sair()
+        liberar_vaga(fila, no)
         metricas.registrar_erro(dominio)
         raise HTTPException(status_code=503, detail=f"Nó do domínio {dominio} indisponível: {e}")
 
-    # A vaga na fila so e liberada quando o streaming terminar (dentro de enviar_eventos)
+    # Responde em streaming; a vaga só é liberada quando a resposta terminar (em enviar_eventos)
     return StreamingResponse(
-        enviar_eventos(dominio, cliente_http, resposta_ollama, inicio, horario_inicio, fila, espera,
+        enviar_eventos(dominio, cliente_http, resposta_ollama, inicio, horario_inicio, fila, no, espera,
                        modelo, rota, pedido.max_tokens_resposta),
-        media_type="text/event-stream",   # SSE: o cliente recebe cada evento assim que ele e enviado
+        media_type="text/event-stream",   # SSE: cada evento chega ao cliente assim que é enviado
     )
 
 
-# Classifica a mensagem sem executar nada: mostra qual dominio, complexidade e modelo o roteador escolheria
+# Só classifica a mensagem, mostrando o domínio, a complexidade e o modelo que o roteador escolheria
 @app.post("/rota")
 async def rotear(pedido: PedidoRota, usuario: dict = Depends(autenticar)):
 
-    limitar_taxa(usuario)   # A classificacao pode usar o LLM, entao tambem conta no limite de pedidos
+    limitar_taxa(usuario)   
     try:
         decisao = await classificar(pedido.mensagem, pedido.metodo)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    
     return decisao.como_dict()
 
 
-# Formata um evento SSE: uma linha "data: {...}" seguida de uma linha em branco
+# Monta um evento SSE
 def evento_sse(dados: dict) -> str:
-
     return f"data: {json.dumps(dados, ensure_ascii=False)}\n\n"
 
 
-# Repassa ao cliente cada token recebido do Ollama e, no final, envia e registra as metricas da resposta
+# Repassa ao cliente cada token que chega do Ollama e envia e guarda as métricas da resposta
 async def enviar_eventos(dominio: str, cliente_http, resposta_ollama, inicio: float,
-                         horario_inicio: float, fila, espera: float,
+                         horario_inicio: float, fila, no: str, espera: float,
                          modelo: str | None = None, rota: dict | None = None,
                          max_tokens_resposta: int | None = None):
 
-    tempo_primeiro_token = None   # Momento em que o primeiro token chegou
-    pedacos_recebidos = 0   # Quantos pedacos de texto chegaram (aproximadamente um por token)
-    estatisticas = {}   # Preenchido por ler_tokens com a contagem exata de tokens do Ollama
+    tempo_primeiro_token = None   # Momento em que chegou o primeiro token
+    pedacos_recebidos = 0   # Quantos pedaços de texto chegaram (mais ou menos um por token)
+    estatisticas = {}   # Recebe do Ollama a contagem exata de tokens, no fim da resposta
 
     try:
         async for token in ler_tokens(cliente_http, resposta_ollama, estatisticas):
@@ -235,38 +237,40 @@ async def enviar_eventos(dominio: str, cliente_http, resposta_ollama, inicio: fl
             pedacos_recebidos += 1
             yield evento_sse({"token": token})
     except (httpx.HTTPError, httpx.StreamError) as e:
-        # A resposta HTTP ja comecou (codigo 200), entao o erro vai como um evento
+        # A resposta já começou com código 200, então o erro só pode ir como um evento
         metricas.registrar_erro(dominio)
         yield evento_sse({"erro": f"conexão com o nó perdida: {e}"})
         return
     finally:
-        fila.sair()   # Libera a vaga no no: terminou, deu erro ou o cliente desconectou
+        liberar_vaga(fila, no)   # Libera a vaga em qualquer caso: terminou, deu erro ou o cliente saiu
 
-    # Metricas do Projeto 1: TTFT, tokens por segundo e latencia fim a fim
+    # Métricas da resposta: TTFT, tokens por segundo e tempo total
     fim = time.perf_counter()
+
     resultado = {
         "fim": True,
-        "tokens": estatisticas.get("tokens") or pedacos_recebidos,   # Usa a contagem exata, se o Ollama enviou
+        "tokens": estatisticas.get("tokens") or pedacos_recebidos,   # Usa a contagem do Ollama, se veio
         "espera_fila_ms": round(espera * 1000, 1),
         "politica_fila": fila.politica,
         "max_tokens_resposta": max_tokens_resposta,
         "tempo_ms": round((fim - inicio) * 1000, 1),
     }
-    if rota:   # Dominio auto: informa ao cliente o que o roteador decidiu
+
+    if rota:   # No domínio auto, conta ao cliente o que o roteador decidiu
         resultado["modelo"] = modelo
         resultado["rota"] = rota
 
     if tempo_primeiro_token is not None:
         resultado["ttft_ms"] = round((tempo_primeiro_token - inicio) * 1000, 1)
 
-    # Tokens por segundo: usa o tempo de geracao medido pelo proprio Ollama, se disponivel
+    # Tokens por segundo: usa o tempo de geração medido pelo próprio Ollama se ele tiver enviado
     duracao_ns = estatisticas.get("duracao_geracao_ns")
     if estatisticas.get("tokens") and duracao_ns:
         resultado["tokens_por_s"] = round(estatisticas["tokens"] / (duracao_ns / 1e9), 1)
     elif tempo_primeiro_token is not None and pedacos_recebidos > 1 and fim > tempo_primeiro_token:
         resultado["tokens_por_s"] = round((pedacos_recebidos - 1) / (fim - tempo_primeiro_token), 1)
 
-    # Guarda as metricas no gateway para o /metricas
+    # Guarda as métricas para o /metricas
     metricas.registrar(
         dominio,
         inicio=horario_inicio,
@@ -283,17 +287,18 @@ async def enviar_eventos(dominio: str, cliente_http, resposta_ollama, inicio: fl
     yield evento_sse(resultado)
 
 
-# Retorna as metricas agregadas de cada dominio: medias, p95, vazao e situacao das filas
+# Mostra as métricas de cada domínio (médias, p95 e vazão) e a situação das filas
 @app.get("/metricas")
 async def ver_metricas():
 
     return {
         "dominios": metricas.resumo(),
         "filas": {nome: fila.estado() for nome, fila in FILAS.items()},
+        "nos": {url: fila.estado() for url, fila in FILAS_NO.items()},
     }
 
 
-# Apaga as metricas guardadas (usado antes de cada rodada do experimento); so administradores
+# Apaga as métricas guardadas, usado antes de cada rodada do experimento (só administradores)
 @app.delete("/metricas")
 async def zerar_metricas(usuario: dict = Depends(autenticar)):
 
@@ -302,14 +307,14 @@ async def zerar_metricas(usuario: dict = Depends(autenticar)):
     return {"zerado": True}
 
 
-# Retorna o ultimo estado do elevador recebido pela telemetria
+# Mostra o último estado do elevador recebido pela telemetria
 @app.get("/estado")
 async def estado():
 
     return ponte.estado
 
 
-# Retorna se o gateway esta conectado ao broker, se o elevador esta online e qual tradutor esta em uso
+# Mostra se o gateway está conectado ao broker, se o elevador está online, o tradutor em uso e as filas
 @app.get("/saude")
 async def saude():
 
@@ -317,5 +322,6 @@ async def saude():
         "broker_conectado": ponte.conectado,
         "elevador_online": ponte.estado["elevador_online"],
         "tradutor": nome_tradutor_ativo(),
-        "filas": {nome: fila.estado() for nome, fila in FILAS.items()},   # Situacao da fila de cada no
+        "filas": {nome: fila.estado() for nome, fila in FILAS.items()},   # Fila de cada domínio
+        "nos": {url: fila.estado() for url, fila in FILAS_NO.items()},   # Fila de cada nó Ollama
     }

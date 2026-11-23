@@ -1,24 +1,17 @@
-# Testa SO a parte de regras do roteador, sem gateway, sem Ollama e sem broker (roda em ~1 s)
-# Mostra, para cada conjunto rotulado:
-#   - acuracia das regras e quantas frases elas decidem sozinhas (confiantes) ou mandam ao LLM
-#   - precisao das regras NAS FRASES EM QUE ELAS TEM CERTEZA (e isso que o hibrido herda)
-#   - os erros, separando os que sao "confiantes" (esses nao passam pelo LLM e sao os perigosos)
-#
-# Uso (da raiz do projeto):
-#   python testar_regras_offline.py                              # conjunto_roteador.csv
-#   python testar_regras_offline.py conjunto_roteador_v2.csv     # outro conjunto
+# Testa só as regras do roteador num conjunto de frases rotuladas, sem precisar do gateway nem do Ollama
 
 import csv
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent / "gateway"))
+sys.path.insert(0, str(Path(__file__).parent / "gateway"))   # Permite importar os arquivos da pasta gateway
 from roteador import classificar_com_confianca   # noqa: E402
 
 
+# Classifica cada frase com as regras e mostra os acertos, quantas iriam ao LLM e os erros
 def main():
 
-    caminho = sys.argv[1] if len(sys.argv) > 1 else "conjunto_roteador.csv"
+    caminho = sys.argv[1] if len(sys.argv) > 1 else "conjunto_roteador.csv"   # Conjunto padrão, se nenhum for passado
     with open(caminho, newline="", encoding="utf-8") as f:
         linhas = list(csv.DictReader(f))
 
@@ -29,9 +22,9 @@ def main():
         dom, comp, conf = classificar_com_confianca(l["mensagem"])
         ok = (dom, comp) == (l["dominio"], l["complexidade"])
         certos += ok
-        confiantes += conf
+        confiantes += conf   # Frases que as regras decidem sozinhas, sem o LLM
         certos_conf += ok and conf
-        falsos_cmd += l["dominio"] == "consulta" and dom == "comando"
+        falsos_cmd += l["dominio"] == "consulta" and dom == "comando"   # O erro perigoso: moveria o elevador
         perdidos += l["dominio"] == "comando" and dom == "consulta"
         if not ok:
             erros.append((conf, l, dom, comp))
@@ -43,6 +36,7 @@ def main():
     print(f"  precisão nas frases confiantes: {certos_conf}/{confiantes} = {certos_conf / max(confiantes, 1):.1%}")
     print(f"  falsos comandos: {falsos_cmd} | comandos perdidos: {perdidos}")
 
+    # Separa os erros em que as regras tinham certeza (esses não passam pelo LLM no híbrido)
     for titulo, filtro in (("ERROS CONFIANTES (nao passam pelo LLM)", True), ("erros em frases duvidosas (o LLM decide)", False)):
         grupo = [e for e in erros if e[0] is filtro]
         if grupo:

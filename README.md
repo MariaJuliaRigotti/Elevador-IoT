@@ -7,7 +7,7 @@ O ElevadorIoT é um gateway de LLMs abertos (Projeto 1 da disciplina de Redes de
 Os modelos rodam localmente no Ollama. O elevador é um gêmeo digital que conversa por MQTT exatamente como um ESP32 faria, então trocar o simulador pelo hardware real não exige mudanças no gateway.
 
 ```
-Cliente  ──HTTP + SSE──►  Gateway (FastAPI)  ──HTTP (streaming)──►  Nós Ollama
+Cliente  ──HTTP + SSE──►  Gateway (FastAPI)  ──HTTP (streaming)──►  Nó Ollama
 (texto ou voz)                  │
                                 └──MQTT──►  Broker (HiveMQ)  ──MQTT──►  Elevador (simulador)
 ```
@@ -16,7 +16,7 @@ Desafios abordados:
 
 - **Streaming token a token** do nó de IA até o cliente (SSE)
 - **Dois domínios** (`comando` e `consulta`), cada um com modelo, prompt e parâmetros próprios
-- **Fila por nó** com limite de concorrência e métricas (TTFT, tokens/s, latência e vazão)
+- **Fila por nó** com limite de concorrência (e, dentro dele, vagas por domínio) e métricas (TTFT, tokens/s, latência e vazão)
 - **Supervisão da IA:** nenhuma saída do LLM chega ao elevador sem passar por validação
 - Incrementos em duas trilhas: **roteamento semântico** (Inteligência) e **token + autorização + rate limiting** (Segurança)
 - **Política de fila** configurável: ordem de chegada (FIFO) ou prioridade para respostas curtas
@@ -101,14 +101,14 @@ Pelo navegador: `http://localhost:8000/docs`. Clique em **Authorize**, cole um t
 |---|---|---|---|
 | morador (padrão do `cliente.py` e do `voz.py`) | `token-morador-2m8x4p` | comando e consulta | 10/min |
 | visitante | `token-visitante-9d1w6z` | só consulta | 5/min |
-| admin | `token-admin-7f3k9q` | comando e consulta | 30/min; pode zerar métricas e trocar a política |
+| admin | `token-admin-7f3k9q` | comando e consulta | 30/min; pode zerar as métricas (`DELETE /metricas`) |
 | experimento (scripts de teste) | `token-experimento-5h2r7t` | comando e consulta | 1000/min |
 
 Para usar outro token: `GATEWAY_TOKEN=token-visitante-9d1w6z python3 cliente.py` (Windows: `$env:GATEWAY_TOKEN="..."`).
 
 ### Acompanhar o sistema
 
-- `http://localhost:8000/saude`: broker, elevador online, filas e nós
+- `http://localhost:8000/saude`: broker conectado, elevador online, tradutor em uso e situação das filas de cada domínio e de cada nó
 - `http://localhost:8000/metricas`: TTFT, tokens/s, latência e vazão por domínio
 - Mensagens MQTT: no MQTT Explorer, conecte em `broker.hivemq.com:1883` e, em **Advanced**, troque a assinatura `#` por `maju-ana-prefixo/#` (o broker público não aceita `#`)
 
@@ -143,7 +143,8 @@ Para usar outro token: `GATEWAY_TOKEN=token-visitante-9d1w6z python3 cliente.py`
 
 - Resposta token a token: Ollama → gateway em NDJSON, gateway → cliente em SSE
 - Domínios `comando` (qwen2.5:1.5b, temperatura 0, saída JSON que vira MQTT) e `consulta` (qwen2.5:3b, temperatura 0,3, texto em streaming), escolhidos pelo campo `dominio` do `POST /chat`
-- Fila por nó com limite de pedidos simultâneos e duas políticas (`POLITICA_FILA`): `fifo`, por ordem de chegada, ou `curtas`, em que respostas menores (`max_tokens_resposta`) passam na frente
+- Fila em dois níveis: cada nó Ollama atende no máximo `LIMITE_NO` pedidos ao mesmo tempo, somando todos os domínios, e dentro dele cada domínio tem as próprias vagas (1 no comando, 2 na consulta), para o comando do elevador não esperar atrás de várias consultas
+- Duas políticas de fila (`POLITICA_FILA`): `fifo`, por ordem de chegada, ou `curtas`, em que respostas menores (`max_tokens_resposta`) passam na frente; o comando, que gera só um JSON curto, também passa na frente das consultas
 - Métricas por pedido e agregadas: TTFT, tokens/s, latência fim a fim, espera na fila e vazão, com média e p95
 
 **Automação IoT**
@@ -152,7 +153,7 @@ Para usar outro token: `GATEWAY_TOKEN=token-visitante-9d1w6z python3 cliente.py`
 - MQTT com QoS 1 para comandos e eventos, QoS 0 + retain para a telemetria e Last Will para detectar a queda do elevador
 - Resposta síncrona (espera o elevador chegar) ou assíncrona (202)
 - Supervisão da IA: a saída do LLM passa pelo Pydantic; a telemetria recebida também é validada antes de ir para o LLM
-- Fallback para regras quando o LLM não responde
+- Fallback para regras quando o LLM não responde; as regras recusam (422) comandos relativos ("sobe dois andares") e com mais de uma ação, em vez de arriscar o andar errado
 - Entrada por voz com perguntas e comandos
 
 **Incrementos**
@@ -170,7 +171,7 @@ gateway/
   roteador.py             roteamento semântico (domínio auto)
   tradutor.py             frase -> comando (LLM com fallback para regras)
   consulta.py             perguntas sobre o elevador, em streaming
-  fila.py                 fila com limite de concorrência por nó (FIFO ou curtas primeiro)
+  fila.py                 filas por nó e por domínio, com limite de concorrência (FIFO ou curtas primeiro)
   metricas.py             TTFT, tokens/s, latência e vazão
   seguranca.py            token, autorização por domínio e rate limiting
   usuarios.json           usuários, tokens e permissões
@@ -183,6 +184,9 @@ carga.py                  experimento obrigatório
 comparar_filas.py         FIFO x prioridade para respostas curtas
 testar_filas.py           teste do escalonador da fila
 avaliar_roteador.py       avaliação do roteador semântico
+testar_regras_offline.py  teste das regras do roteador, sem gateway nem Ollama
+testes_seguranca.txt      roteiro de testes da trilha de Segurança
+mosquitto/mosquitto.conf  broker local opcional, para testar sem internet (ver abaixo)
 ```
 
 ### Configuração (variáveis de ambiente)
@@ -200,8 +204,19 @@ avaliar_roteador.py       avaliação do roteador semântico
 | `MODELO_PEQUENO` / `MODELO_GRANDE` | `qwen2.5:1.5b` / `qwen2.5:3b` | gateway (roteador) |
 | `ROTEADOR` | `hibrido` (`llm`, `regras`) | gateway |
 | `POLITICA_FILA` | `fifo` (`curtas`) | gateway |
+| `LIMITE_NO` | `2` (igual ao `OLLAMA_NUM_PARALLEL`) | gateway |
 | `TIMEOUT_CONFIRMACAO` | `15` s | gateway |
-| `GATEWAY_URL` / `GATEWAY_TOKEN` | `http://localhost:8000` / token do morador | clientes |
+| `GATEWAY_URL` / `GATEWAY_TOKEN` | `http://localhost:8000` / token do morador (`cliente.py`, `voz.py`) ou de experimento (scripts de teste) | clientes e scripts |
+
+### Broker local (opcional)
+
+Sem internet, dá para trocar o HiveMQ por um Mosquitto local usando o `mosquitto/mosquitto.conf` (sem senha e sem TLS, só para teste):
+
+```bash
+docker run -d --name mosquitto -p 1883:1883 -v "$PWD/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf" eclipse-mosquitto
+```
+
+Depois troque `BROKER_HOST: broker.hivemq.com` por `BROKER_HOST: host.docker.internal` no gateway e no simulador do `docker-compose.yml` (no Linux, use o IP da máquina).
 
 ### Trocando o simulador pelo ESP32
 
@@ -215,5 +230,4 @@ Desligue o simulador e grave no ESP32 um firmware que siga a seção 3 do [PROTO
 - **Prioridade entre domínios** (por exemplo, comandos antes de consultas quando dividem o mesmo hardware)
 - **Balanceamento entre vários nós** de IA, com failover quando um nó cai
 - **Fila de chamados no elevador** (algoritmo SCAN), em vez de recusar pedidos quando está ocupado
-- **Transcrição local** com faster-whisper, sem depender do Google
 - **Testes automatizados** com pytest para o tradutor, o roteador e o rate limiting

@@ -1,24 +1,4 @@
-# Avaliacao do roteamento semantico: compara o classificador por LLM com o classificador por regras
-# em um conjunto de frases rotuladas (conjunto_roteador.csv: mensagem, dominio, complexidade)
-#
-# Mede, para cada metodo:
-#   - acuracia do dominio, da complexidade e dos dois juntos
-#   - "falsos comandos": frases que NAO eram comando mas foram roteadas para comando (o erro perigoso:
-#     poderia mover o elevador sem o usuario pedir) e "comandos perdidos" (erro inofensivo)
-#   - custo: tempo gasto so para classificar (mediana e p95), que e somado a todo pedido do dominio auto
-#   - quantas vezes o LLM falhou e o gateway caiu para as regras
-#
-# O endpoint /rota so classifica, nao executa nada: pode rodar sem simulador e sem broker
-# Atencao: os rotulos do conjunto sao julgamento humano. Defina-os ANTES de medir e nao ajuste
-# prompt ou regras olhando o resultado neste mesmo conjunto (use um conjunto novo para isso)
-#
-# Uso:
-#   python avaliar_roteador.py                          # os 3 metodos, 3 repeticoes por frase
-#   python avaliar_roteador.py --conjunto conjunto_roteador_v2.csv --saida resultados_roteador_v2
-#   python avaliar_roteador.py --repeticoes 5
-#   python avaliar_roteador.py --so-grafico             # refaz so o grafico a partir dos CSVs
-#
-# Saida (pasta "resultados_roteador_v2" por padrao): avaliacao.csv, resumo.csv, grafico.png
+# Avalia o roteador semântico: compara regras, híbrido e LLM num conjunto de frases rotuladas
 
 import argparse
 import csv
@@ -28,18 +8,20 @@ import statistics
 import sys
 import time
 from pathlib import Path
-
 import httpx
 
-METODOS = ["regras", "hibrido", "llm"]
+# Configuracoes
+METODOS = ["regras", "hibrido", "llm"]   # Métodos comparados
 
 
+# Lê um CSV e retorna uma lista de dicionários, um por linha
 def ler_csv(caminho: Path) -> list:
 
     with open(caminho, newline="", encoding="utf-8") as f:
         return list(csv.DictReader(f))
 
 
+# Grava uma lista de dicionários num CSV
 def gravar_csv(caminho: Path, linhas: list):
 
     with open(caminho, "w", newline="", encoding="utf-8") as f:
@@ -48,14 +30,15 @@ def gravar_csv(caminho: Path, linhas: list):
         w.writerows(linhas)
 
 
+# Percentil 95: 95% dos valores ficaram abaixo desse
 def p95(valores: list) -> float:
 
     ordenados = sorted(valores)
     return ordenados[math.ceil(0.95 * len(ordenados)) - 1]
 
 
-# Classifica uma frase 'repeticoes' vezes com um metodo. A decisao vem da 1a chamada (com temperatura 0
-# o LLM deve repetir a mesma resposta); as demais servem para medir o tempo e checar a consistencia
+# Classifica uma frase várias vezes com um método: a decisão vem da primeira chamada,
+# e as outras servem para medir o tempo e ver se o resultado se repete
 def classificar(http: httpx.Client, gateway: str, mensagem: str, metodo: str, repeticoes: int) -> dict:
 
     respostas, tempos_cliente = [], []
@@ -75,11 +58,12 @@ def classificar(http: httpx.Client, gateway: str, mensagem: str, metodo: str, re
         "metodo_usado": primeira["metodo"],
         "bruto": primeira.get("bruto", ""),
         "classificacao_ms": round(statistics.median(x["classificacao_ms"] for x in respostas), 2),
-        "viagem_ms": round(statistics.median(tempos_cliente), 1),   # Inclui a ida e volta HTTP ao gateway
+        "viagem_ms": round(statistics.median(tempos_cliente), 1),   # Inclui a ida e a volta do pedido HTTP
         "consistente": consistente,
     }
 
 
+# Calcula, para cada método, os acertos, os falsos comandos e o tempo de classificação
 def resumir(linhas: list) -> list:
 
     resumo = []
@@ -108,6 +92,7 @@ def resumir(linhas: list) -> list:
     return resumo
 
 
+# Mostra o resumo no terminal e lista as frases que cada método errou
 def mostrar(resumo: list, linhas: list):
 
     print("\nResumo:")
@@ -128,6 +113,7 @@ def mostrar(resumo: list, linhas: list):
                       f"obtido {l['dominio_obtido']}/{l['complexidade_obtida']}")
 
 
+# Gera o gráfico com o acerto e o tempo de cada método
 def grafico(pasta: Path):
 
     try:
@@ -143,7 +129,7 @@ def grafico(pasta: Path):
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4.5))
 
-    # Painel 1: acuracia por metodo
+    # Painel 1: acerto de cada método
     metricas = [("acuracia_dominio", "domínio"), ("acuracia_complexidade", "complexidade"),
                 ("acuracia_conjunta", "os dois")]
     presentes = [m for m in METODOS if m in resumo]
@@ -161,7 +147,7 @@ def grafico(pasta: Path):
     ax1.legend(loc="lower right")
     ax1.grid(axis="y", alpha=0.3)
 
-    # Painel 2: custo de classificar (escala log, porque regras e LLM diferem em ordens de grandeza)
+    # Painel 2: tempo para classificar (em escala log, porque regras e LLM têm tempos muito diferentes)
     dados = [[float(l["classificacao_ms"]) for l in linhas if l["metodo"] == m] for m in METODOS
              if any(l["metodo"] == m for l in linhas)]
     ax2.boxplot(dados, tick_labels=[m for m in METODOS if any(l["metodo"] == m for l in linhas)])
@@ -175,11 +161,13 @@ def grafico(pasta: Path):
     print(f"Gráfico salvo em {pasta / 'grafico.png'}")
 
 
+# Lê as opções, classifica todas as frases e grava os resultados
 def main():
 
     ap = argparse.ArgumentParser(description="Avalia o roteamento semântico (LLM x regras)")
     ap.add_argument("--gateway", default="http://localhost:8000")
-    ap.add_argument("--token", default=os.getenv("TOKEN_GATEWAY", ""), help="token Bearer para /rota (ou variável TOKEN_GATEWAY)")
+    ap.add_argument("--token", default=os.getenv("GATEWAY_TOKEN", "token-experimento-5h2r7t"),
+                    help="token Bearer para /rota (padrão: variável GATEWAY_TOKEN ou o token de experimento)")
     ap.add_argument("--conjunto", default="conjunto_roteador.csv")
     ap.add_argument("--repeticoes", type=int, default=3, help="chamadas por frase e método (mede tempo e consistência)")
     ap.add_argument("--saida", default="resultados_roteador_v2")
@@ -203,11 +191,11 @@ def main():
 
     linhas = []
     if not args.token:
-        sys.exit("Informe o token com --token ou defina TOKEN_GATEWAY no ambiente.")
+        sys.exit("Informe o token com --token ou defina GATEWAY_TOKEN no ambiente.")
 
     with httpx.Client(timeout=60, headers={"Authorization": f"Bearer {args.token}"}) as http:
         try:
-            # Aquecimento: a primeira chamada ao LLM carrega o modelo na memoria e nao deve entrar na medicao
+            # Aquecimento: a primeira chamada carrega o modelo na memória e não entra na medição
             print("Aquecendo o classificador...")
             for _ in range(2):
                 http.post(f"{args.gateway}/rota", json={"mensagem": "onde está o elevador?", "metodo": "llm"}).raise_for_status()

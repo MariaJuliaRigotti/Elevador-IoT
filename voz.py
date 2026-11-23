@@ -1,14 +1,4 @@
-# Entrada por voz: microfone -> texto (Google Speech) -> gateway
-# A transcricao acontece aqui no cliente; pela rede so vai o texto
-# O gateway decide sozinho se a frase e um comando ou uma pergunta (dominio "auto", roteamento semantico):
-#   - comando ("sobe pro segundo andar"): o elevador anda e a resposta e um JSON
-#   - pergunta ("onde está o elevador?"): a resposta chega em streaming, palavra por palavra
-# Uso:
-#   python voz.py            # escuta uma frase
-#   python voz.py --loop     # fica escutando ate Ctrl+C
-# Para usar outro token (ex.: o do visitante), defina a variavel GATEWAY_TOKEN antes de rodar
-# Dependencias (Linux: antes rode `sudo apt install portaudio19-dev`):
-#   pip install -r requirements-voz.txt
+# Cliente por voz: transcreve a fala no próprio computador e envia só o texto ao gateway (--loop para continuar ouvindo)
 
 import json
 import os
@@ -16,31 +6,32 @@ import sys
 from ctypes import CFUNCTYPE, c_char_p, c_int, cdll
 import httpx
 
-# Silencia os avisos do ALSA no Linux (nao muda o funcionamento)
+# Esconde os avisos de áudio (ALSA) que aparecem no Linux; não muda o funcionamento
 ERROR_HANDLER_FUNC = CFUNCTYPE(None, c_char_p, c_int, c_char_p, c_int, c_char_p)
 
+# Recebe os avisos do ALSA e não faz nada com eles
 def _ignorar_erro_alsa(filename, line, function, err, fmt):
     pass
 
-_handler = ERROR_HANDLER_FUNC(_ignorar_erro_alsa)   # Precisa manter a referencia viva
+_handler = ERROR_HANDLER_FUNC(_ignorar_erro_alsa)   # Precisa ficar guardado numa variável, senão para de funcionar
 try:
     cdll.LoadLibrary("libasound.so.2").snd_lib_error_set_handler(_handler)
 except OSError:
-    pass   # Windows/macOS: nao ha ALSA
+    pass   # No Windows e no macOS não existe ALSA
 
-import speech_recognition as sr   # noqa: E402  (precisa vir depois do ALSA)
+import speech_recognition as sr   # noqa: E402  (precisa vir depois de silenciar o ALSA)
 
 # Configuracoes
-GATEWAY = os.getenv("GATEWAY_URL", "http://localhost:8000")   # Endereco do gateway
+GATEWAY = os.getenv("GATEWAY_URL", "http://localhost:8000")   # Endereço do gateway
 TOKEN = os.getenv("GATEWAY_TOKEN", "token-morador-2m8x4p")   # Token de acesso (ver gateway/usuarios.json)
 CABECALHOS = {"Authorization": f"Bearer {TOKEN}"}   # Enviado em todo pedido ao gateway
-IDIOMA = "pt-BR"
+IDIOMA = "pt-BR"   # Idioma da transcrição
 
-# Escuta o microfone e transforma a fala em texto (None se nao entendeu)
+# Escuta o microfone e transforma a fala em texto (None se não entendeu)
 def ouvir(r: sr.Recognizer, mic: sr.Microphone) -> str | None:
 
     with mic as source:
-        print("\n🎤 Fale...")
+        print("\nFale...")
         try:
             audio = r.listen(source, timeout=5, phrase_time_limit=6)
         except sr.WaitTimeoutError:
@@ -59,22 +50,22 @@ def ouvir(r: sr.Recognizer, mic: sr.Microphone) -> str | None:
     print(f"  Você disse: \"{texto}\"")
     return texto
 
-# Mostra a decisao do roteador semantico (dominio, complexidade e modelo)
+# Mostra o que o roteador decidiu: domínio, complexidade e modelo
 def mostrar_rota(rota: dict, modelo: str):
 
     print(f"  ⇢ roteador: {rota['dominio']}/{rota['complexidade']} → modelo {modelo}")
 
-# Envia o texto ao /chat com dominio "auto" e mostra a resposta
-# Comando: resposta JSON unica. Pergunta: resposta em streaming (SSE), palavra por palavra
+# Envia o texto com o domínio auto e mostra a resposta
+# Se for comando, a resposta é um JSON; se for pergunta, chega palavra por palavra
 def enviar(texto: str):
 
     pedido = {"dominio": "auto", "mensagem": texto}
-    
+
     try:
         with httpx.stream("POST", f"{GATEWAY}/chat", json=pedido, headers=CABECALHOS, timeout=90) as r:
             eh_streaming = "text/event-stream" in r.headers.get("content-type", "")
 
-            # Caminho do comando (ou de um erro): resposta JSON unica
+            # Comando (ou erro): a resposta é um JSON só
             if not eh_streaming:
                 r.read()
                 dados = r.json()
@@ -87,14 +78,14 @@ def enviar(texto: str):
                 print(f"  ← {dados['status'].upper()} em {dados['tempo_ms']} ms (tradutor: {dados['tradutor']})")
                 return
 
-            # Caminho da pergunta: cada evento SSE chega como uma linha "data: {...}"
+            # Pergunta: cada evento chega como uma linha "data: {...}"
             print("  ← ", end="", flush=True)
             for linha in r.iter_lines():
                 if not linha.startswith("data: "):
                     continue
                 evento = json.loads(linha[len("data: "):])
                 if "token" in evento:
-                    print(evento["token"], end="", flush=True)   # flush: mostra a palavra na hora
+                    print(evento["token"], end="", flush=True)   # flush mostra a palavra na hora, sem esperar a linha acabar
                 elif "erro" in evento:
                     print(f"\n  ✗ {evento['erro']}")
                 elif evento.get("fim"):
@@ -104,10 +95,11 @@ def enviar(texto: str):
     except httpx.HTTPError as e:
         print(f"\n  ✗ gateway inacessível: {e}")
 
+# Calibra o microfone e escuta uma frase (ou várias, com --loop)
 def main():
 
     r = sr.Recognizer()
-    r.pause_threshold = 1.0   # Espera 1 s de silencio antes de considerar que a frase acabou
+    r.pause_threshold = 1.0   # Espera 1 s de silêncio para considerar que a frase acabou
     mic = sr.Microphone()
 
     with mic as source:

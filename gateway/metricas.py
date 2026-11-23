@@ -1,16 +1,14 @@
-# Registro das metricas de cada pedido atendido pelo gateway
-# Por pedido: TTFT, tokens, tokens por segundo, latencia fim a fim e espera na fila
-# Agregadas (no /metricas): medias, pior caso (p95) e vazao do sistema
+# Métricas dos pedidos atendidos pelo gateway: TTFT, tokens/s, latência, espera na fila e vazão
 
 import math
 import time
 from collections import deque
 
 # Configuracoes
-MAX_REGISTROS = 1000   # Guarda so os ultimos pedidos de cada dominio, para nao ocupar memoria sem limite
-JANELA_VAZAO = 60   # A vazao considera os pedidos que terminaram nos ultimos 60 segundos
+MAX_REGISTROS = 1000   # Guarda só os últimos pedidos de cada domínio, para não ocupar memória sem limite
+JANELA_VAZAO = 60   # A vazão considera os pedidos que terminaram nos últimos 60 segundos
 
-# Media de uma lista de numeros (None se a lista estiver vazia)
+# Média de uma lista de números 
 def media(valores: list) -> float | None:
 
     if not valores:
@@ -18,7 +16,7 @@ def media(valores: list) -> float | None:
 
     return round(sum(valores) / len(valores), 1)
 
-# Percentil 95: 95% dos pedidos ficaram abaixo desse valor (mostra o "pior caso" tipico)
+# Percentil 95: 95% dos pedidos ficaram abaixo desse valor 
 def p95(valores: list) -> float | None:
 
     if not valores:
@@ -33,11 +31,10 @@ class RegistroMetricas:
 
     def __init__(self):
 
-        self.registros = {}   # Para cada dominio, a lista dos ultimos pedidos
-        self.erros = {}   # Para cada dominio, quantos pedidos terminaram com erro
+        self.registros = {}   # Para cada domínio, os últimos pedidos atendidos
+        self.erros = {}   # Para cada domínio, quantos pedidos terminaram com erro
 
-    # Guarda as metricas de um pedido que terminou com sucesso
-    # inicio e fim sao horarios (time.time()), usados para calcular a vazao
+    # Guarda as métricas de um pedido que terminou com sucesso
     def registrar(self, dominio: str, inicio: float, fim: float, **dados):
 
         if dominio not in self.registros:
@@ -49,21 +46,22 @@ class RegistroMetricas:
 
         self.erros[dominio] = self.erros.get(dominio, 0) + 1
 
-    # Apaga tudo (usado entre as rodadas do experimento)
+    # Apaga tudo 
     def zerar(self):
 
         self.registros = {}
         self.erros = {}
 
-    # Calcula a vazao: quantos pedidos e tokens o sistema entregou por segundo, somando todos os clientes
+    # Calcula quantos pedidos e tokens o sistema entregou por segundo, somando todos os clientes
     def vazao(self, lista: list) -> dict:
 
         agora = time.time()
         recentes = [r for r in lista if agora - r["fim"] <= JANELA_VAZAO]
+
         if not recentes:
             return {"pedidos_por_s": 0, "tokens_por_s": 0, "janela_s": 0}
 
-        # Intervalo entre o primeiro pedido comecar e o ultimo terminar
+        # Tempo entre o primeiro pedido começar e o último terminar
         duracao = max(r["fim"] for r in recentes) - min(r["inicio"] for r in recentes)
         if duracao <= 0:
             return {"pedidos_por_s": 0, "tokens_por_s": 0, "janela_s": 0}
@@ -73,19 +71,19 @@ class RegistroMetricas:
         return {
             "pedidos_por_s": round(len(recentes) / duracao, 2),
             "tokens_por_s": round(total_tokens / duracao, 1),
-            "janela_s": round(duracao, 1),   # Periodo usado no calculo
+            "janela_s": round(duracao, 1),   
         }
 
-    # Resumo das metricas de cada dominio, mostrado no /metricas
+    # Resumo de cada domínio, mostrado no /metricas
     def resumo(self) -> dict:
 
         resultado = {}
         nomes = set(self.registros) | set(self.erros)
-        
+
         for dominio in nomes:
             lista = list(self.registros.get(dominio, []))
 
-            # Junta os valores de cada metrica, ignorando os pedidos que nao tem aquela metrica
+            # Junta os valores de cada métrica, pulando os pedidos que não têm aquela métrica
             ttft = [r["ttft_ms"] for r in lista if r.get("ttft_ms") is not None]
             velocidade = [r["tokens_por_s"] for r in lista if r.get("tokens_por_s") is not None]
             latencia = [r["tempo_ms"] for r in lista]
@@ -103,4 +101,4 @@ class RegistroMetricas:
 
         return resultado
 
-metricas = RegistroMetricas()   # Registro unico, usado por todo o gateway
+metricas = RegistroMetricas()   # Registro único, usado por todo o gateway

@@ -39,9 +39,9 @@ Os tokens, os domínios que cada usuário pode usar e o limite de pedidos por mi
 | `POST /chat` | sim | Envia uma mensagem a um domínio (`comando`, `consulta` ou `auto`) |
 | `POST /comando` | sim | Atalho para o domínio `comando` |
 | `POST /rota` | sim | Só classifica a mensagem (domínio e complexidade), sem executar nada |
-| `GET /metricas` | não | TTFT, tokens/s, latência e vazão por domínio e situação das filas |
+| `GET /metricas` | não | TTFT, tokens/s, latência e vazão por domínio e situação das filas (`filas` por domínio, `nos` por nó) |
 | `DELETE /metricas` | admin | Zera as métricas (usado entre as rodadas do experimento) |
-| `GET /saude` | não | Conexão com o broker, elevador online, tradutor em uso e filas |
+| `GET /saude` | não | Conexão com o broker, elevador online, tradutor em uso e filas (`filas` por domínio, `nos` por nó) |
 | `GET /estado` | não | Última telemetria recebida do elevador |
 
 ### `POST /chat`: pedido
@@ -117,7 +117,7 @@ Sempre no formato `{"detail": "<explicação>"}`.
 
 ## 2. Gateway ↔ nós de IA (HTTP do Ollama)
 
-O gateway chama `POST <nó>/api/chat`. Cada domínio tem seu próprio nó, modelo, prompt e temperatura (`gateway/dominios.py`), e uma fila com limite de pedidos simultâneos (1 no comando, 2 na consulta).
+O gateway chama `POST <nó>/api/chat`. Cada domínio tem seu próprio nó, modelo, prompt e temperatura (`gateway/dominios.py`), e uma fila com limite de pedidos simultâneos (1 no comando, 2 na consulta). Além disso, cada nó tem a própria fila (`LIMITE_NO`, padrão 2): um pedido entra primeiro na fila do domínio e depois na do nó, então o nó nunca atende mais que `LIMITE_NO` pedidos ao mesmo tempo, mesmo quando vários domínios usam o mesmo Ollama.
 
 ### Domínio `comando`: resposta inteira, em JSON
 

@@ -1,6 +1,6 @@
-# Ponte entre o mundo assíncrono do FastAPI e o cliente MQTT (paho).
-# Publica comandos com um request_id único.
-# Assina os tópicos de evento/telemetria e guarda o último estado.
+# Ponte entre o mundo assíncrono do FastAPI e o cliente MQTT (paho)
+# Publica comandos com um request_id único
+# Assina os tópicos de evento/telemetria e guarda o último estado
 # Permite que uma requisição HTTP "espere" o evento com o seu request_id
 
 import asyncio
@@ -37,30 +37,33 @@ class PonteMQTT:
             mqtt.CallbackAPIVersion.VERSION2, client_id=f"gateway-{uuid.uuid4().hex[:6]}"
         )
         self.cliente.on_connect = self._on_connect
+        self.cliente.on_disconnect = self._on_disconnect
         self.cliente.on_message = self._on_message
-        self.cliente.reconnect_delay_set(min_delay=1, max_delay=10)
+        self.cliente.reconnect_delay_set(min_delay=1, max_delay=10)   # Tenta reconectar sozinho, de 1 a 10 s
 
-        self.loop: asyncio.AbstractEventLoop | None = None
-        self.pendentes: dict[str, asyncio.Future] = {}
-        self.lock = threading.Lock()
+        self.loop: asyncio.AbstractEventLoop | None = None   # Loop do FastAPI, onde as respostas sao entregues
+        self.pendentes: dict[str, asyncio.Future] = {}   # request_id -> pedido HTTP esperando o evento
+        self.lock = threading.Lock()   # Protege 'pendentes', usado pela thread do paho e pelo FastAPI
 
         self.conectado = False
         self.estado = {"elevador": None, "elevador_online": None}
 
-    # Ciclo de vida
-
+    # Conecta ao broker em segundo plano; o paho roda numa thread propria
     def iniciar(self, loop: asyncio.AbstractEventLoop):
+
         self.loop = loop
         self.cliente.connect_async(BROKER_HOST, BROKER_PORT, keepalive=30)
-        self.cliente.loop_start()  # thread própria do paho
+        self.cliente.loop_start()
 
+    # Para a thread do paho e desconecta do broker
     def parar(self):
+
         self.cliente.loop_stop()
         self.cliente.disconnect()
 
-    # Callbacks
-
+    # Chamado pelo paho ao conectar (ou reconectar): assina os topicos do elevador
     def _on_connect(self, c, userdata, flags, reason_code, properties):
+
         self.conectado = not reason_code.is_failure
         print(f"[gateway] conectado ao broker {BROKER_HOST}:{BROKER_PORT} ({reason_code})", flush=True)
         c.subscribe([
@@ -69,6 +72,13 @@ class PonteMQTT:
             (topico_online, 1),
         ])
 
+    # Chamado pelo paho quando a conexao cai: o /saude passa a mostrar o broker desconectado
+    def _on_disconnect(self, c, userdata, flags, reason_code, properties):
+
+        self.conectado = False
+        print(f"[gateway] desconectado do broker ({reason_code}), tentando reconectar...", flush=True)
+
+    # Chamado pelo paho a cada mensagem recebida: atualiza o estado ou entrega o evento esperado
     def _on_message(self, c, userdata, msg):
 
         topico = msg.topic
@@ -92,23 +102,25 @@ class PonteMQTT:
         elif topico == topico_evento:
             self._resolver(dados)
 
+    # Entrega o evento final (chegou ou rejeitado) ao pedido HTTP que tem o mesmo request_id
+    # Roda na thread do paho, por isso usa call_soon_threadsafe para falar com o loop do FastAPI
     def _resolver(self, evento: dict):
 
         if evento.get("tipo") not in EVENTOS_FINAIS:
-            return  
+            return
         with self.lock:
             fut = self.pendentes.pop(evento.get("request_id"), None)
         if fut and self.loop:
             self.loop.call_soon_threadsafe(lambda: fut.done() or fut.set_result(evento))
 
-    # API usada pelo FastAPI 
-
+    # Publica o comando com um request_id novo e, se 'aguardar', espera o evento do elevador ate 'timeout'
+    # Retorna (request_id, payload enviado, evento recebido ou None)
     async def enviar(self, topico: str, payload: dict, aguardar: bool, timeout: float):
 
         request_id = uuid.uuid4().hex[:12]
         payload = {"request_id": request_id, **payload}
         fut = None
-        
+
         if aguardar:
             # Registra ANTES de publicar, para não perder uma resposta muito rápida
             fut = self.loop.create_future()

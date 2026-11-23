@@ -1,21 +1,13 @@
-# Cliente de linha de comando para testar o gateway (camada de entrada do projeto)
-# Por padrao, o gateway decide sozinho se a frase e comando ou consulta (dominio "auto", roteamento semantico)
-# Com --manual, o proprio cliente decide: frases terminadas em "?" vao para a consulta, as demais sao comandos
-# Uso:
-#   python cliente.py                       # modo interativo
-#   python cliente.py "sobe pro andar 3"    # um comando so
-#   python cliente.py "onde está o elevador?"
-#   python cliente.py --manual "sobe pro andar 3"
-# Para usar outro token (ex.: o do visitante):
-#   GATEWAY_TOKEN=token-visitante-9d1w6z python cliente.py
+# Cliente de texto: envia frases ao gateway e mostra a resposta (use --manual para decidir pelo "?")
 
 import json
 import os
 import sys
 import httpx
 
-GATEWAY = os.getenv("GATEWAY_URL", "http://localhost:8000")   # Endereco do gateway
-TOKEN = os.getenv("GATEWAY_TOKEN", "token-morador-2m8x4p")   # Token de acesso (ver gateway/usuarios.json)
+# Configuracoes
+GATEWAY = os.getenv("GATEWAY_URL", "http://localhost:8000")   # Endereço do gateway
+TOKEN = os.getenv("GATEWAY_TOKEN", "token-morador-2m8x4p")   # Token de acesso 
 CABECALHOS = {"Authorization": f"Bearer {TOKEN}"}   # Enviado em todo pedido ao gateway
 
 # Envia um comando ao elevador pelo /comando e mostra o resultado
@@ -37,14 +29,15 @@ def enviar_comando(texto: str):
     print(f"  ← {dados['status'].upper()} em {dados['tempo_ms']} ms "
           f"(tradutor: {dados['tradutor']})  {dados.get('detalhe') or ''}")
 
-# Envia uma pergunta ao dominio consulta e imprime cada token assim que ele chega
+# Envia uma pergunta ao domínio consulta e mostra cada token assim que ele chega
 def enviar_consulta(pergunta: str):
 
     pedido = {"dominio": "consulta", "mensagem": pergunta}
+    
     try:
         with httpx.stream("POST", f"{GATEWAY}/chat", json=pedido, headers=CABECALHOS, timeout=90) as r:
 
-            # Erros (400, 422, 503) chegam antes do streaming, como JSON normal
+            # Os erros (400, 422, 503) chegam antes do streaming, como um JSON normal
             if r.status_code >= 400:
                 r.read()
                 print(f"  ✗ [{r.status_code}] {r.json().get('detail')}")
@@ -58,7 +51,7 @@ def enviar_consulta(pergunta: str):
                 dados = json.loads(linha[len("data: "):])
 
                 if "token" in dados:
-                    print(dados["token"], end="", flush=True)   # flush: mostra o token na hora
+                    print(dados["token"], end="", flush=True)   # flush mostra o token na hora, sem esperar a linha acabar
                 elif "erro" in dados:
                     print(f"\n  ✗ {dados['erro']}")
                 elif dados.get("fim"):
@@ -67,14 +60,14 @@ def enviar_consulta(pergunta: str):
     except httpx.HTTPError as e:
         print(f"\n  ✗ gateway inacessível: {e}")
 
-# Mostra a decisao do roteador semantico: dominio, complexidade, modelo escolhido e custo de classificar
+# Mostra o que o roteador decidiu: domínio, complexidade, modelo e tempo para classificar
 def mostrar_rota(rota: dict, modelo: str):
 
     print(f"  ⇢ roteador: {rota['dominio']}/{rota['complexidade']} → modelo {modelo} "
           f"({rota['metodo']}, classificou em {rota['classificacao_ms']} ms)")
 
-# Envia a frase ao /chat com dominio "auto": o gateway escolhe o dominio e o tamanho do modelo
-# A resposta e um JSON (se for comando) ou um streaming SSE (se for consulta)
+# Envia a frase com o domínio auto, para o gateway decidir se é comando ou consulta
+# Se for comando, a resposta é um JSON; se for consulta, chega em streaming
 def enviar_auto(texto: str):
 
     pedido = {"dominio": "auto", "mensagem": texto}
@@ -86,14 +79,14 @@ def enviar_auto(texto: str):
                 if "detail" in corpo:
                     print(f"  ✗ [{r.status_code}] {corpo['detail']}")
                     return
-                dados = corpo   # 409 e 504 tambem trazem o corpo normal do comando
+                dados = corpo   # 409 e 504 também trazem a resposta normal do comando
             elif "text/event-stream" not in r.headers.get("content-type", ""):
                 r.read()
                 dados = r.json()
             else:
                 dados = None
 
-            # Caminho do comando: resposta JSON unica
+            # Comando: a resposta é um JSON só
             if dados is not None:
                 if dados.get("rota"):
                     mostrar_rota(dados["rota"], dados["modelo"])
@@ -103,7 +96,7 @@ def enviar_auto(texto: str):
                       f"(tradutor: {dados['tradutor']})  {dados.get('detalhe') or ''}")
                 return
 
-            # Caminho da consulta: tokens em streaming; a decisao do roteador chega no evento final
+            # Consulta: os tokens chegam um a um, e a decisão do roteador vem no evento final
             print("  ← ", end="", flush=True)
             for linha in r.iter_lines():
                 if not linha.startswith("data: "):
@@ -121,7 +114,7 @@ def enviar_auto(texto: str):
     except httpx.HTTPError as e:
         print(f"\n  ✗ gateway inacessivel: {e}")
 
-# Modo manual: decide aqui se a frase e uma pergunta (consulta) ou um comando
+# Modo manual: frase terminada em "?" vai para a consulta, o resto é comando
 def enviar_manual(texto: str):
 
     if texto.endswith("?"):
@@ -129,8 +122,9 @@ def enviar_manual(texto: str):
     else:
         enviar_comando(texto)
 
-MODO_MANUAL = "--manual" in sys.argv   # O roteamento fica no gateway, a menos que se peca o modo manual
+MODO_MANUAL = "--manual" in sys.argv   # Sem --manual, quem decide é o gateway
 
+# Envia a frase pelo modo escolhido
 def enviar(texto: str):
 
     if MODO_MANUAL:
@@ -138,9 +132,10 @@ def enviar(texto: str):
     else:
         enviar_auto(texto)
 
+# Com uma frase como argumento, envia só ela; sem argumento, abre o modo interativo
 def main():
 
-    # Modo de um comando so: a frase vem como argumento (as opcoes "--..." nao fazem parte da frase)
+    # Frase passada como argumento (as opções "--..." não fazem parte dela)
     argumentos = [a for a in sys.argv[1:] if not a.startswith("--")]
     if argumentos:
         enviar(" ".join(argumentos))
@@ -149,7 +144,7 @@ def main():
     # Modo interativo
     print("Digite um comando ou uma pergunta ('estado' / 'sair'):")
     print(f"Roteamento: {'manual (pelo ?)' if MODO_MANUAL else 'semântico (o gateway decide)'}")
-    
+
     while True:
         try:
             texto = input("> ").strip()

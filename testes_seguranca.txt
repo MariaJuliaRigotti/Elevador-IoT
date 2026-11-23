@@ -1,0 +1,107 @@
+TESTES DA TRILHA DE SEGURANCA
+(token de acesso, autorizacao por dominio e rate limiting)
+
+Rodar no terminal do computador que roda o Docker, na pasta do projeto.
+
+Usuarios (gateway/usuarios.json):
+  morador      token-morador-2m8x4p      comando e consulta   10 pedidos/min
+  visitante    token-visitante-9d1w6z    so consulta           5 pedidos/min
+  admin        token-admin-7f3k9q        comando e consulta   30 pedidos/min, pode zerar metricas
+  experimento  token-experimento-5h2r7t  comando e consulta   1000 pedidos/min (usado pelos scripts de teste)
+
+
+------------------------------------------------------------
+PASSO 1 - Subir o sistema
+------------------------------------------------------------
+    docker compose up --build -d
+    docker compose logs gateway --tail 10
+
+Esperado: "[gateway] conectado ao broker ..." sem nenhum erro.
+Se aparecer "FileNotFoundError: usuarios.json", o arquivo nao esta na pasta gateway/.
+
+
+------------------------------------------------------------
+PASSO 2 - Morador movendo o elevador (deve funcionar)
+------------------------------------------------------------
+    python3 cliente.py "sobe pro segundo andar"
+
+Esperado: CONCLUIDO ...
+
+
+------------------------------------------------------------
+PASSO 3 - Visitante tentando mover o elevador (deve ser bloqueado)
+------------------------------------------------------------
+    GATEWAY_TOKEN=token-visitante-9d1w6z python3 cliente.py "sobe pro segundo andar"
+
+Esperado: [403] O usuário 'visitante' não tem permissão para o domínio 'comando'.
+
+
+------------------------------------------------------------
+PASSO 4 - Visitante fazendo uma pergunta (deve funcionar)
+------------------------------------------------------------
+    GATEWAY_TOKEN=token-visitante-9d1w6z python3 cliente.py "em que andar está o elevador?"
+
+Esperado: a resposta aparece aos poucos (streaming).
+
+
+------------------------------------------------------------
+PASSO 5 - Sem token e com token falso (deve ser bloqueado)
+------------------------------------------------------------
+    GATEWAY_TOKEN=errado python3 cliente.py "sobe pro segundo andar"
+    curl -s -X POST localhost:8000/comando -H "content-type: application/json" -d '{"texto":"sobe pro 2"}'
+
+Esperado: os dois dao erro 401 ("Token inválido" e "Token ausente").
+
+
+------------------------------------------------------------
+PASSO 6 - Limite de pedidos (o visitante pode 5 por minuto)
+------------------------------------------------------------
+    for i in 1 2 3 4 5 6 7; do GATEWAY_TOKEN=token-visitante-9d1w6z python3 cliente.py "onde está o elevador?"; done
+
+Esperado: as primeiras perguntas sao respondidas e depois aparece
+    [429] Limite de 5 pedidos por minuto excedido. Tente de novo em XX s.
+
+Observacao: o passo 4 ja gastou 1 pedido do visitante, entao o 429 pode aparecer antes do 6o pedido.
+Depois de 1 minuto, o visitante volta a funcionar.
+
+
+------------------------------------------------------------
+PASSO 7 - Log de seguranca
+------------------------------------------------------------
+    docker compose logs gateway | grep seguranca
+
+Esperado: uma linha "NEGADO" para cada bloqueio dos passos 3, 5 e 6. Exemplo:
+    [seguranca] NEGADO 403 dominio nao permitido usuario=visitante dominio=comando
+    [seguranca] NEGADO 401 token invalido usuario=-
+    [seguranca] NEGADO 429 limite excedido usuario=visitante limite=5/min
+
+
+------------------------------------------------------------
+PASSO 8 - Teste de concorrencia (nao pode ter sido afetado)
+------------------------------------------------------------
+    python3 teste_concorrencia.py 5
+
+Esperado: a mesma tabela de antes, sem erros 401 ou 429
+(o script usa o token "experimento", que tem limite alto e e admin).
+
+
+------------------------------------------------------------
+PASSO 9 - Pelo navegador (/docs)
+------------------------------------------------------------
+Abrir http://localhost:8000/docs. Deve aparecer um botao "Authorize" no topo.
+
+  a) Sem clicar em Authorize, testar o POST /chat com:
+         {"dominio": "consulta", "mensagem": "onde está o elevador?"}
+     Esperado: 401
+
+  b) Clicar em Authorize, colar  token-visitante-9d1w6z  e testar:
+         {"dominio": "comando", "mensagem": "sobe pro 2"}
+     Esperado: 403
+
+  c) Ainda como visitante, testar:
+         {"dominio": "consulta", "mensagem": "onde está o elevador?"}
+     Esperado: 200, com a resposta
+
+
+------------------------------------------------------------
+Se todos os resultados foram os esperados, a trilha de Seguranca esta funcionando.

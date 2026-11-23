@@ -1,46 +1,23 @@
-# Experimento obrigatorio do Projeto 1: varia o numero de clientes simultaneos e mede
-# TTFT e vazao (tokens/s agregados), comparando com a previsao de um modelo simples de fila
-#
-# O que o script faz:
-#   1. Aquece o modelo com c clientes simultaneos (c = limite do no), para nao medir o
-#      carregamento do modelo nem a primeira vez que o no atende pedidos em paralelo
-#   2. Roda N=1 e PREVE os demais N com o modelo ingenuo (tempo de servico S medido com N=1)
-#   3. Roda N=c e PREVE de novo com o modelo calibrado (S medido com N=c), porque o tempo de
-#      servico costuma crescer quando os pedidos dividem o mesmo hardware
-#      As duas previsoes sao gravadas ANTES de os niveis maiores serem medidos
-#   4. Roda os demais N (varias repeticoes cada) e grava os CSVs
-#   5. Plota medido x previsto, com barras de erro (desvio entre as repeticoes)
-#
-# Modelo de fila: o no tem c vagas, cada pedido leva S de servico (constante) e os N clientes
-# chegam juntos. O cliente k (k = 0..N-1) espera floor(k/c) * S antes de comecar, entao:
-#   TTFT(k)           = TTFT0 + floor(k/c) * S
-#   duracao da rodada = ceil(N/c) * S
-#   vazao             = N * tokens / duracao da rodada
-# O TTFT medio so "dispara" quando N passa de c
-#
-# Uso:
-#   python carga.py                                      # N = 1, 2, 4, 8, 16 com 5 repeticoes
-#   python carga.py --niveis 1,2,4 --repeticoes 3        # rodada menor, para testar
-#   python carga.py --so-grafico                         # refaz so o grafico a partir dos CSVs
-#
-# Saida (pasta "resultados"): requisicoes.csv, rodadas.csv, previsao.csv, grafico.png
+# Experimento obrigatório: mede TTFT e vazão com 1, 2, 4, 8 e 16 clientes e compara com a previsão do modelo de fila
 
 import argparse
 import asyncio
 import csv
 import json
 import math
+import os
 import statistics
 import sys
 import time
 from pathlib import Path
-
 import httpx
 
+# Configuracoes
+TOKEN = os.getenv("GATEWAY_TOKEN", "token-experimento-5h2r7t")   # Token com limite alto, para o limite de pedidos não atrapalhar a medição
+CABECALHOS = {"Authorization": f"Bearer {TOKEN}"}   # Enviado em todo pedido ao gateway
 
-# ---------------------------------------------------------------- medicao
 
-# Um cliente: envia a pergunta ao /chat e le o streaming ate o evento final com as metricas
+# Um cliente: envia a pergunta ao /chat e lê a resposta até o evento final com as métricas
 async def um_cliente(http: httpx.AsyncClient, args, numero: int, t0: float) -> dict:
 
     pedido = {"dominio": args.dominio, "mensagem": args.pergunta}
@@ -67,8 +44,7 @@ async def um_cliente(http: httpx.AsyncClient, args, numero: int, t0: float) -> d
     return {"cliente": numero, "erro": "resposta terminou sem o evento final"}
 
 
-# Uma rodada: N clientes disparados no mesmo instante
-# Retorna os que deram certo, os que deram erro e a duracao da rodada (ate o ultimo terminar)
+# Uma rodada: N clientes ao mesmo tempo. Retorna os que deram certo, os que deram erro e a duração da rodada
 async def rodada(http: httpx.AsyncClient, args, n: int):
 
     t0 = time.perf_counter()
@@ -79,24 +55,24 @@ async def rodada(http: httpx.AsyncClient, args, n: int):
     return ok, erros, duracao
 
 
-# Le o limite de pedidos simultaneos do no (c) no /saude do gateway
+# Lê no /saude quantos pedidos o domínio atende ao mesmo tempo (c)
 async def obter_vagas(http: httpx.AsyncClient, args) -> int:
 
     saude = (await http.get(f"{args.gateway}/saude")).json()
     return int(saude["filas"][args.dominio]["limite"])
 
 
+# Média de uma lista (NaN se estiver vazia, para não quebrar o gráfico)
 def media(valores):
-
     return statistics.mean(valores) if valores else float("nan")
 
 
+# Desvio padrão entre as repetições (0 se houver uma só)
 def desvio(valores):
-
     return statistics.stdev(valores) if len(valores) > 1 else 0.0
 
 
-# Resume uma rodada em uma linha: TTFT, vazao agregada e velocidade por cliente
+# Resume uma rodada em uma linha: TTFT, vazão total e velocidade por cliente
 def resumir(n: int, rep: int, ok: list, erros: list, duracao: float) -> dict:
 
     tokens_total = sum(r["tokens"] for r in ok)
@@ -112,30 +88,29 @@ def resumir(n: int, rep: int, ok: list, erros: list, duracao: float) -> dict:
         "espera_media_ms": round(media([r["espera_fila_ms"] for r in ok]), 1),
         "tokens_total": tokens_total,
         "duracao_s": round(duracao, 2),
-        "vazao_tok_s": round(tokens_total / duracao, 2) if duracao > 0 else 0,   # Tokens/s somados de todos os clientes
+        "vazao_tok_s": round(tokens_total / duracao, 2) if duracao > 0 else 0,   # Tokens/s somando todos os clientes
         "tok_s_por_cliente": round(media(por_cliente), 2) if por_cliente else "",
     }
 
 
-# ---------------------------------------------------------------- previsao
-
-# Parametros do modelo a partir das requisicoes de um nivel (medianas, para resistir a rodadas atipicas)
+# Calcula os parâmetros do modelo de fila a partir de um nível medido (usa a mediana para ignorar rodadas fora do normal)
 def parametros(requisicoes: list) -> dict:
 
     return {
-        "ttft0": statistics.median([r["ttft_ms"] - r["espera_fila_ms"] for r in requisicoes]),   # Ate o 1o token, sem contar a fila
-        "servico": statistics.median([r["tempo_ms"] - r["espera_fila_ms"] for r in requisicoes]),   # S: tempo com a vaga ocupada
+        "ttft0": statistics.median([r["ttft_ms"] - r["espera_fila_ms"] for r in requisicoes]),   # Tempo até o primeiro token, sem contar a fila
+        "servico": statistics.median([r["tempo_ms"] - r["espera_fila_ms"] for r in requisicoes]),   # S: tempo em que o pedido ocupa a vaga
         "tokens": statistics.mean([r["tokens"] for r in requisicoes]),
     }
 
 
-# Preve cada nivel. "p" vale para N > 1; "p_n1" (se dado) vale para N = 1, que roda sem concorrencia
+# Prevê o TTFT e a vazão de cada nível; 'p_n1', se vier, é usado para N = 1, que roda sem concorrência
 def prever(niveis: list, vagas: int, modelo: str, calibrado_com: int, p: dict, p_n1: dict = None) -> list:
 
     previsao = []
+
     for n in niveis:
         q = p_n1 if (p_n1 and n == 1) else p
-        esperas = [(k // vagas) * q["servico"] for k in range(n)]   # Cliente k espera floor(k/c) * S
+        esperas = [(k // vagas) * q["servico"] for k in range(n)]   # O cliente k espera floor(k/c) * S
         duracao_s = math.ceil(n / vagas) * q["servico"] / 1000
         previsao.append({
             "n": n,
@@ -148,21 +123,23 @@ def prever(niveis: list, vagas: int, modelo: str, calibrado_com: int, p: dict, p
             "ttft_max_prev_ms": round(q["ttft0"] + max(esperas), 1),
             "vazao_prev_tok_s": round(n * q["tokens"] / duracao_s, 2),
         })
+
     return previsao
 
 
+# Mostra a previsão no terminal
 def mostrar_previsao(linhas: list, titulo: str):
 
     p = linhas[-1]
     print(f"\n{titulo} (S = {p['servico_ms']:.0f} ms, TTFT0 = {p['ttft0_ms']:.0f} ms, c = {p['vagas']}):")
+
     for p in linhas:
         print(f"  N={p['n']:>2}: TTFT médio previsto {p['ttft_medio_prev_ms']:>8.0f} ms | "
               f"vazão prevista {p['vazao_prev_tok_s']:>6.1f} tok/s")
     print()
 
 
-# ---------------------------------------------------------------- arquivos
-
+# Grava uma lista de dicionários num CSV
 def gravar_csv(caminho: Path, linhas: list):
 
     if not linhas:
@@ -173,24 +150,27 @@ def gravar_csv(caminho: Path, linhas: list):
         w.writerows(linhas)
 
 
+# Lê um CSV e retorna uma lista de dicionários, um por linha
 def ler_csv(caminho: Path) -> list:
 
     with open(caminho, newline="", encoding="utf-8") as f:
         return list(csv.DictReader(f))
 
 
-# Agrupa um campo por N e devolve (ns, medias, desvios) entre as repeticoes
+# Agrupa um campo por N e retorna os níveis, as médias e os desvios entre as repetições
 def agrupar(rodadas: list, campo: str):
 
     por_n = {}
+
     for r in rodadas:
         if r[campo] != "":
             por_n.setdefault(int(r["n"]), []).append(float(r[campo]))
     ns = sorted(por_n)
+
     return ns, [media(por_n[n]) for n in ns], [desvio(por_n[n]) for n in ns]
 
 
-# Grafico com tres paineis: TTFT, vazao agregada e velocidade por cliente
+# Gera o gráfico com três painéis: TTFT, vazão total e velocidade por cliente
 def grafico(pasta: Path):
 
     try:
@@ -202,7 +182,8 @@ def grafico(pasta: Path):
         return
 
     rodadas = ler_csv(pasta / "rodadas.csv")
-    previsoes = {}   # modelo -> {n: linha}
+    previsoes = {}   # Para cada modelo, a previsão de cada N
+
     for p in ler_csv(pasta / "previsao.csv"):
         previsoes.setdefault(p.get("modelo", "ingenuo"), {})[int(p["n"])] = p
     vagas = int(next(iter(next(iter(previsoes.values())).values()))["vagas"])
@@ -218,6 +199,7 @@ def grafico(pasta: Path):
     ]
 
     fig, eixos = plt.subplots(1, 3, figsize=(16, 4.5))
+    
     for ax, (medido, previsto, rotulo, titulo) in zip(eixos, paineis):
         ns, medias, desvios = agrupar(rodadas, medido)
         ax.errorbar(ns, medias, yerr=desvios, fmt="o-", capsize=4, label="medido (média ± desvio)")
@@ -230,7 +212,7 @@ def grafico(pasta: Path):
         ax.set_xticks(ns)
         ax.set_xticklabels([str(n) for n in ns])
         ax.minorticks_off()
-        ax.set_ylim(bottom=0)   # Eixo a partir de zero: nao exagera pequenas variacoes
+        ax.set_ylim(bottom=0)   # Eixo começando no zero, para não exagerar pequenas variações
         ax.set_xlabel("clientes simultâneos")
         ax.set_ylabel(rotulo)
         ax.set_title(titulo)
@@ -242,21 +224,20 @@ def grafico(pasta: Path):
     print(f"Gráfico salvo em {pasta / 'grafico.png'}")
 
 
-# ---------------------------------------------------------------- execucao
-
+# Roda o experimento: aquece o modelo, mede cada nível, grava as previsões e os resultados
 async def executar(args):
 
     pasta = Path(args.saida)
     pasta.mkdir(parents=True, exist_ok=True)
 
-    async with httpx.AsyncClient(timeout=args.timeout) as http:
+    async with httpx.AsyncClient(timeout=args.timeout, headers=CABECALHOS) as http:
         try:
             vagas = args.vagas or await obter_vagas(http, args)
         except (httpx.HTTPError, KeyError) as e:
             sys.exit(f"Não consegui ler o limite do nó em {args.gateway}/saude ({e}). "
                      f"O gateway está no ar? Ou informe com --vagas.")
 
-        niveis = sorted(set(args.niveis) | {1, vagas})   # N=1 e N=c calibram os dois modelos de fila
+        niveis = sorted(set(args.niveis) | {1, vagas})   # N=1 e N=c sempre entram, porque calibram as duas previsões
 
         print(f"Gateway: {args.gateway} | domínio: {args.dominio} | limite do nó (c): {vagas}")
         print(f"Aquecendo o modelo com {vagas} cliente(s) simultâneo(s) "
@@ -288,9 +269,9 @@ async def executar(args):
                 aviso = f"  ({len(erros)} erros)" if erros else ""
                 print(f"N={n:>2} rep {rep}/{args.repeticoes}: TTFT médio {linha['ttft_medio_ms']:>8.0f} ms | "
                       f"vazão {linha['vazao_tok_s']:>6.1f} tok/s | duração {linha['duracao_s']:>6.1f} s{aviso}")
-                await asyncio.sleep(args.pausa)   # Deixa o no esvaziar entre as rodadas
+                await asyncio.sleep(args.pausa)   # Deixa o nó esvaziar entre as rodadas
 
-            # Terminou N=1: previsao ingenua, gravada antes de medir qualquer outro nivel
+            # Depois de N=1: grava a previsão ingênua antes de medir os outros níveis
             if n == 1:
                 p1 = parametros([r for r in requisicoes if r["n"] == 1])
                 previsao += prever(niveis, vagas, "ingenuo", 1, p1)
@@ -298,7 +279,7 @@ async def executar(args):
                 mostrar_previsao([p for p in previsao if p["modelo"] == "ingenuo"],
                                  "Previsão ingênua gravada antes das demais medições")
 
-            # Terminou N=c: previsao calibrada com o S medido sob concorrencia, antes de medir N > c
+            # Depois de N=c: grava a previsão calibrada, com o S medido com pedidos simultâneos
             if n == vagas and vagas > 1:
                 pc = parametros([r for r in requisicoes if r["n"] == vagas])
                 previsao += prever(niveis, vagas, "calibrado", vagas, pc, p1)
@@ -309,11 +290,12 @@ async def executar(args):
     gravar_csv(pasta / "requisicoes.csv", requisicoes)
     gravar_csv(pasta / "rodadas.csv", rodadas)
 
-    # Tabela final: medido x previsto (ingenuo e calibrado)
+    # Tabela final: medido x previsto
     prev = {(p["modelo"], p["n"]): p for p in previsao}
     ns, ttft, ttft_d = agrupar(rodadas, "ttft_medio_ms")
     _, vazao, _ = agrupar(rodadas, "vazao_tok_s")
 
+    # Formata um valor previsto para a tabela ("-" se não houver)
     def campo(modelo, n, nome, casas=0):
         p = prev.get((modelo, n))
         return f"{p[nome]:.{casas}f}" if p else "-"
@@ -330,6 +312,7 @@ async def executar(args):
     grafico(pasta)
 
 
+# Lê as opções e roda o experimento (ou só refaz o gráfico)
 def main():
 
     ap = argparse.ArgumentParser(description="Experimento de carga do gateway (TTFT e vazão x clientes simultâneos)")
