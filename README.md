@@ -47,8 +47,8 @@ O contrato completo entre as partes (endpoints, eventos SSE, tópicos MQTT e pay
 
 1. Clone o repositório:
    ```bash
-   git clone https://github.com/Clarice-Curtinhas/Automacao-IoT-via-protocolos-de-rede.git
-   cd Automacao-IoT-via-protocolos-de-rede
+   git clone https://github.com/MariaJuliaRigotti/Elevador-IoT.git
+   cd Elevador-IoT
    ```
 
 2. Suba o gateway, o simulador e o Ollama:
